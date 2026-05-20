@@ -94,3 +94,11 @@ class Database:
                 (limit,),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def list_jobs_by_status(self, status: str) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM jobs WHERE status = ? ORDER BY created_at ASC",
+                (status,),
+            ).fetchall()
+        return [dict(row) for row in rows]

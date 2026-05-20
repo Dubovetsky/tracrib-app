@@ -30,6 +30,15 @@ class JobService:
     async def start(self) -> None:
         if self.queue is None:
             self.queue = asyncio.Queue()
+        for job in self.db.list_jobs_by_status("processing"):
+            self.db.update_job(
+                job["id"],
+                status="failed",
+                error="Processing was interrupted by application restart.",
+                finished_at=utc_now(),
+            )
+        for job in self.db.list_jobs_by_status("queued"):
+            await self.queue.put(job["id"])
         if self.worker_task is None or self.worker_task.done():
             self.worker_task = asyncio.create_task(self._worker())
 
