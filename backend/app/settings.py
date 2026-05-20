@@ -53,5 +53,9 @@ class Settings:
     def result_dir(self) -> Path:
         return self.data_dir / "results"
 
+    @property
+    def log_dir(self) -> Path:
+        return self.data_dir / "logs"
+
 
 settings = Settings()

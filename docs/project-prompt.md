@@ -164,6 +164,13 @@ nvidia-cudnn-cu12==9.22.0.52; platform_system == "Windows"
 
 Важно: установка этих пакетов может занимать заметное время, потому что скачиваются крупные CUDA/cuDNN wheels с DLL. Это не обязательно зависание. Нужно проверять PID, CPU, network connections и факт появления пакетов через `python -m pip show`.
 
+Дополнительный hotfix для Windows:
+
+- `backend/app/transcriber.py` должен добавлять CUDA DLL directories до `from faster_whisper import WhisperModel`, иначе CTranslate2 может попытаться загрузить `cublas64_12.dll` слишком рано.
+- При загрузке модели обязательно использовать fallback-цепочку: CUDA `float16`, затем CUDA `int8_float16`, затем CPU `int8`.
+- Если все режимы загрузки модели не сработали, job должен завершаться readable error в UI, а полный traceback должен писаться в `backend/data/logs/backend.log`.
+- Для срочного локального MVP можно запускать backend с `TEXT_POLISH_PROVIDER=local` и `DIARIZATION_ENABLED=0`, чтобы не зависеть от облака и optional diarization.
+
 ### Pytest temp/cache PermissionError
 
 Симптом:

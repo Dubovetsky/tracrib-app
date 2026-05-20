@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import shutil
+import traceback
 import uuid
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from fastapi import UploadFile
@@ -16,9 +19,29 @@ from .text_polish import TextPolishConfig, polish_transcript
 from .transcriber import FasterWhisperEngine
 
 
+LOGGER = logging.getLogger("transcrib_app.backend")
+
+
+def configure_backend_logging(log_dir: Path) -> None:
+    log_dir.mkdir(parents=True, exist_ok=True)
+    if any(isinstance(handler, RotatingFileHandler) for handler in LOGGER.handlers):
+        return
+    handler = RotatingFileHandler(
+        log_dir / "backend.log",
+        maxBytes=5_000_000,
+        backupCount=3,
+        encoding="utf-8",
+    )
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    LOGGER.addHandler(handler)
+    LOGGER.setLevel(logging.INFO)
+    LOGGER.propagate = True
+
+
 class JobService:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
+        configure_backend_logging(settings.log_dir)
         self.db = Database(settings.db_path)
         self.diarization_engine = build_diarization_engine(
             DiarizationConfig(
@@ -142,9 +165,24 @@ class JobService:
                 finished_at=utc_now(),
             )
         except Exception as exc:
+            traceback_text = traceback.format_exc()
+            LOGGER.error("Job %s failed:\n%s", job_id, traceback_text)
             self.db.update_job(
                 job_id,
                 status="failed",
-                error=str(exc),
+                error=build_readable_error(exc),
                 finished_at=utc_now(),
             )
+
+
+def build_readable_error(exc: Exception) -> str:
+    message = str(exc).strip() or exc.__class__.__name__
+    lower_message = message.lower()
+    if "cublas64_12.dll" in lower_message or "cudnn" in lower_message:
+        return (
+            "Не удалось загрузить CUDA runtime для faster-whisper. "
+            "Приложение попробовало CUDA float16, CUDA int8_float16 и CPU int8. "
+            f"Техническая причина: {message}. "
+            "Подробный traceback записан в backend/data/logs/backend.log."
+        )
+    return f"{message}\n\nПодробный traceback записан в backend/data/logs/backend.log."

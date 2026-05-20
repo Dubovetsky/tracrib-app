@@ -6,7 +6,7 @@
 
 - Backend: Python, FastAPI, SQLite
 - ASR: faster-whisper, модель `large-v3-turbo`
-- GPU: CUDA, `float16` с fallback на `int8_float16`
+- GPU: CUDA `float16` с fallback на CUDA `int8_float16`, затем CPU `int8`
 - Audio preprocessing: ffmpeg, mono 16 kHz WAV
 - Frontend: React + Vite
 - Storage: локальная папка `backend/data`
@@ -69,11 +69,23 @@ $env:TRANSCRIB_APP_DATA_DIR="D:\transcrib-data"
 Полезные переменные:
 
 ```powershell
+$env:HF_HUB_OFFLINE="1"
+$env:HF_HUB_DISABLE_XET="1"
 $env:WHISPER_MODEL="large-v3-turbo"
 $env:WHISPER_DEVICE="cuda"
 $env:WHISPER_COMPUTE_TYPE="float16"
 $env:WHISPER_FALLBACK_COMPUTE_TYPE="int8_float16"
+$env:TEXT_POLISH_PROVIDER="local"
+$env:DIARIZATION_ENABLED="0"
 ```
+
+Backend автоматически добавляет Windows CUDA DLL directories из Python packages `nvidia-cublas-cu12` и `nvidia-cudnn-cu12` перед импортом faster-whisper. Если CUDA runtime всё равно недоступен, загрузка модели идёт по цепочке:
+
+1. CUDA `float16`.
+2. CUDA `int8_float16`.
+3. CPU `int8`.
+
+Если все режимы не сработали, job завершится понятной ошибкой в UI, а полный traceback будет записан в `backend/data/logs/backend.log`.
 
 Опциональная diarization по голосам:
 
@@ -151,6 +163,26 @@ npm run dev
 9. SQLite хранит историю, статусы и ошибки.
 
 Если приложение перезапущено, задачи `queued` возвращаются в очередь. Задачи, прерванные во время `processing`, помечаются как `failed`, чтобы не зависать навсегда.
+
+## Быстрая проверка MVP
+
+```powershell
+ffmpeg -version
+python -m pip show nvidia-cublas-cu12 nvidia-cudnn-cu12 faster-whisper ctranslate2
+python -m py_compile backend\app\audio.py backend\app\services.py backend\app\settings.py backend\app\transcriber.py
+python -m pytest tests\test_db.py tests\test_exports.py tests\test_postprocess.py tests\test_text_polish.py tests\test_diarization.py tests\test_transcriber_fallback.py -p no:cacheprovider --basetemp=backend\data\pytest-tmp-full
+Invoke-RestMethod -Uri http://127.0.0.1:8000/api/health
+```
+
+Для локального запуска backend без облачной правки и без diarization:
+
+```powershell
+$env:HF_HUB_OFFLINE="1"
+$env:HF_HUB_DISABLE_XET="1"
+$env:TEXT_POLISH_PROVIDER="local"
+$env:DIARIZATION_ENABLED="0"
+python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000
+```
 
 ## Тесты
 

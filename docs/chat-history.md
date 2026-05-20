@@ -700,3 +700,85 @@ full explicit test set outside sandbox: 29 passed
 
 - Реальный pyannote-прогон не выполнялся в этой сессии: для него нужно установить optional dependency и, вероятно, указать Hugging Face token с доступом к модели.
 - Первый полный pytest внутри sandbox снова уперся в известный Windows ACL `PermissionError: [WinError 5]` на pytest temp cleanup, но повторный полный прогон вне sandbox прошел успешно.
+
+## Сессия 8: срочный hotfix CUDA fallback и проверка `.m4a` до TXT
+
+Дата: 2026-05-20
+
+Пользователь сообщил, что в UI при транскрибации `.m4a` получил ошибку:
+
+```text
+Library cublas64_12.dll is not found or cannot be loaded
+```
+
+Цель: срочно довести локальный MVP до рабочего состояния без изменения архитектуры, EXE, SaaS или redesign.
+
+Сделано:
+
+- Исправлен порядок инициализации CUDA DLL directories в `backend/app/transcriber.py`: теперь `nvidia/cublas/bin` и `nvidia/cudnn/bin` добавляются до импорта `faster_whisper.WhisperModel`.
+- Для Windows дополнительно обновляется `PATH` текущего процесса на найденные CUDA/cuDNN DLL directories.
+- Добавлена устойчивая цепочка загрузки модели:
+  - CUDA `float16`;
+  - CUDA `int8_float16`;
+  - CPU `int8`.
+- Если все режимы загрузки модели не сработали, backend формирует readable error с перечислением проверенных режимов.
+- В `backend/app/services.py` добавлен file logging в `backend/data/logs/backend.log`; при падении job туда пишется полный traceback.
+- В `backend/app/audio.py` ошибки ffmpeg теперь превращаются в понятные сообщения: ffmpeg не найден или ffmpeg не смог подготовить аудио.
+- Добавлены регрессионные тесты `tests/test_transcriber_fallback.py`.
+- README и `docs/project-prompt.md` обновлены командами запуска/проверки и описанием fallback.
+
+Проверки:
+
+```powershell
+ffmpeg -version
+python -m pip show nvidia-cublas-cu12 nvidia-cudnn-cu12 faster-whisper ctranslate2
+python -m py_compile backend\app\audio.py backend\app\services.py backend\app\settings.py backend\app\transcriber.py tests\test_transcriber_fallback.py
+python -m pytest tests\test_db.py tests\test_exports.py tests\test_postprocess.py tests\test_text_polish.py tests\test_diarization.py tests\test_transcriber_fallback.py -p no:cacheprovider --basetemp=backend\data\pytest-tmp-fallback-full
+```
+
+Результат:
+
+```text
+ffmpeg available
+nvidia-cublas-cu12 12.9.2.10
+nvidia-cudnn-cu12 9.22.0.52
+faster-whisper 1.2.1
+ctranslate2 4.7.1
+py_compile passed
+32 passed
+```
+
+Реальная проверка загрузки модели:
+
+```text
+cuda dll dirs added
+faster_whisper import ok
+cuda float16 model load ok
+```
+
+Реальная проверка `.m4a`:
+
+- Источник: `backend/data/uploads/7a99472e-0341-491b-ad7b-b8165284b6dd.m4a`, размер `127042990` bytes.
+- Проверка выполнена через FastAPI TestClient как upload flow.
+- Job: `bc723b6a-e300-4177-8576-c7ab6ed65da6`.
+- Статусы: `processing` -> `completed`.
+- Время до completed: около `140` секунд.
+- TXT chars: `57091`.
+- TXT path: `backend/data/results/bc723b6a-e300-4177-8576-c7ab6ed65da6/transcript.txt`.
+- `/api/jobs/{job_id}/result`: `200`, `57091` chars.
+- `/api/jobs/{job_id}/download/txt`: `200`, `101109` bytes.
+
+Backend перезапущен на `127.0.0.1:8000` с локальными env:
+
+```powershell
+HF_HUB_OFFLINE=1
+HF_HUB_DISABLE_XET=1
+TEXT_POLISH_PROVIDER=local
+DIARIZATION_ENABLED=0
+```
+
+Health check:
+
+```text
+GET http://127.0.0.1:8000/api/health -> ok
+```

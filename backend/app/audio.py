@@ -17,4 +17,10 @@ def preprocess_audio(input_path: Path, output_path: Path) -> None:
         "16000",
         str(output_path),
     ]
-    subprocess.run(command, check=True, capture_output=True, text=True)
+    try:
+        subprocess.run(command, check=True, capture_output=True, text=True)
+    except FileNotFoundError as exc:
+        raise RuntimeError("ffmpeg не найден в PATH. Установите ffmpeg и перезапустите backend.") from exc
+    except subprocess.CalledProcessError as exc:
+        details = (exc.stderr or exc.stdout or "").strip()
+        raise RuntimeError(f"ffmpeg не смог подготовить аудио: {details}") from exc
