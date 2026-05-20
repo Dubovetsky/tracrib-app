@@ -1,6 +1,6 @@
 # Transcrib App
 
-Локальный web-сервис для транскрибации аудио в текст на Windows 11 с NVIDIA GPU. MVP не использует облачные API, не делает real-time транскрибацию и не включает diarization.
+Локальный web-сервис для транскрибации аудио в текст на Windows 11 с NVIDIA GPU. ASR работает локально через faster-whisper; опциональная облачная постобработка может исправлять текст, слова и IT/Agile-аббревиатуры с fallback на локальные правила. MVP не делает real-time транскрибацию и не включает diarization.
 
 ## Стек
 
@@ -10,6 +10,7 @@
 - Audio preprocessing: ffmpeg, mono 16 kHz WAV
 - Frontend: React + Vite
 - Storage: локальная папка `backend/data`
+- Text polish: локальные правила + опциональная цепочка облачных LLM-провайдеров
 
 ## Структура
 
@@ -72,6 +73,26 @@ $env:WHISPER_COMPUTE_TYPE="float16"
 $env:WHISPER_FALLBACK_COMPUTE_TYPE="int8_float16"
 ```
 
+Опциональная облачная правка текста:
+
+```powershell
+$env:TEXT_POLISH_PROVIDER="auto"
+$env:TEXT_POLISH_PROVIDERS="openai,deepseek,qwen,grok,gigachat,yandexgpt,mistral,groq"
+$env:OPENAI_API_KEY="..."
+$env:DEEPSEEK_API_KEY="..."
+$env:QWEN_API_KEY="..."
+$env:GROK_API_KEY="..."
+$env:GIGACHAT_ACCESS_TOKEN="..."
+$env:YANDEXGPT_API_KEY="..."
+$env:YANDEXGPT_FOLDER_ID="..."
+```
+
+Если ключей нет, сервис недоступен или ответ облака не разобран, приложение использует локальные правила и не валит задачу. Для полного локального режима:
+
+```powershell
+$env:TEXT_POLISH_PROVIDER="local"
+```
+
 ## Запуск frontend
 
 В новом терминале:
@@ -107,8 +128,10 @@ npm run dev
 2. Worker берёт задачу из локальной очереди.
 3. ffmpeg конвертирует файл в mono 16 kHz WAV.
 4. faster-whisper запускается с `language="ru"`.
-5. Результаты сохраняются в `backend/data/results/{job_id}`.
-6. SQLite хранит историю, статусы и ошибки.
+5. Локальная постобработка чистит служебные подписи, разбивает текст на читаемые блоки и нормализует частые IT/Agile-аббревиатуры.
+6. Если настроены облачные ключи, text polish пробует провайдеров по приоритету и приводит текст в более аккуратное состояние. При ошибке используется локальный результат.
+7. Результаты сохраняются в `backend/data/results/{job_id}`.
+8. SQLite хранит историю, статусы и ошибки.
 
 Если приложение перезапущено, задачи `queued` возвращаются в очередь. Задачи, прерванные во время `processing`, помечаются как `failed`, чтобы не зависать навсегда.
 

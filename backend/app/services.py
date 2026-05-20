@@ -11,6 +11,7 @@ from .audio import preprocess_audio
 from .db import Database, utc_now
 from .exports import write_exports
 from .settings import Settings
+from .text_polish import TextPolishConfig, polish_transcript
 from .transcriber import FasterWhisperEngine
 
 
@@ -106,6 +107,18 @@ class JobService:
             wav_path = self.settings.wav_dir / f"{job_id}.wav"
             preprocess_audio(Path(job["stored_audio_path"]), wav_path)
             text, segments = self.transcriber.transcribe(wav_path, language=self.settings.language)
+            text, segments = polish_transcript(
+                text,
+                segments,
+                TextPolishConfig(
+                    provider=self.settings.text_polish_provider,
+                    providers=self.settings.text_polish_providers,
+                    model=self.settings.text_polish_model,
+                    timeout_seconds=self.settings.text_polish_timeout_seconds,
+                    openai_api_key=self.settings.openai_api_key,
+                ),
+                language=self.settings.language,
+            )
             export_paths = write_exports(text, segments, self.settings.result_dir / job_id)
             self.db.update_job(
                 job_id,

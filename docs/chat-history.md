@@ -598,3 +598,55 @@ python -m pytest tests\test_db.py tests\test_exports.py tests\test_postprocess.p
 tests/test_postprocess.py: 12 passed
 all explicit tests: 17 passed
 ```
+
+## Сессия 6: облачная правка текста с fallback на локальные правила
+
+Дата: 2026-05-20
+
+Пользователь попросил добавить следующую фичу:
+
+```text
+необходимо использовать облачные лучшие решения для анализа и приведение текста в подобаюзее состояние.
+используем для определения праильности написания слов и аббревиатур, как русских, так и английских.
+если облачные сервисы не доступны, тогда это надо сделать локально
+```
+
+Затем пользователь уточнил, что OpenAI может быть недоступен и нужно добавить провайдеров по приоритету:
+
+```text
+deepseek, qwen, grok, gigachad, yandexgpt, или другие более специализированные сервисы
+```
+
+Сделано:
+
+- Добавлен модуль `backend/app/text_polish.py`.
+- После локальной постобработки и перед экспортом TXT/SRT/VTT в `backend/app/services.py` теперь вызывается `polish_transcript()`.
+- Добавлены настройки в `backend/app/settings.py`: `TEXT_POLISH_PROVIDER`, `TEXT_POLISH_PROVIDERS`, `TEXT_POLISH_MODEL`, `TEXT_POLISH_TIMEOUT_SECONDS`, `OPENAI_API_KEY`.
+- Режим по умолчанию `TEXT_POLISH_PROVIDER=auto`.
+- Provider-chain в `auto` режиме: `openai`, `deepseek`, `qwen`, `grok`, `gigachat`, `yandexgpt`, `mistral`, `groq`, затем локальные правила.
+- Приоритет можно переопределить через `TEXT_POLISH_PROVIDERS`, например `deepseek,qwen,openai,yandexgpt`.
+- Поддержаны alias: `xai` -> `grok`, `gigachad`/`giga` -> `gigachat`, `dashscope` -> `qwen`, `yandex` -> `yandexgpt`.
+- Для OpenAI-compatible провайдеров используется `/chat/completions`: OpenAI, DeepSeek, Qwen/DashScope compatible mode, Grok/xAI, Mistral, Groq.
+- Для GigaChat и YandexGPT добавлены отдельные адаптеры.
+- Если ключа нет, провайдер недоступен, возвращает ошибку или отдает невалидный JSON, обработка переходит к следующему провайдеру. Если облака не сработали, используется локальная нормализация `normalize_domain_terms()`.
+- Cloud prompt просит исправлять орфографию, пунктуацию, регистр, русские и английские слова, IT/Agile-аббревиатуры и названия технологий без пересказа, сокращения, добавления фактов или изменения смысла.
+- Таймкоды и спикеры сохраняются, облако исправляет только `text` внутри сегментов.
+- README обновлен: описана опциональная облачная правка текста, env-переменные и локальный режим.
+- `docs/project-prompt.md` обновлен: прежнее ограничение “не использовать облачные API” уточнено. Облако разрешено только для опционального text polish после локального ASR и обязательно с локальным fallback.
+
+Проверки:
+
+```powershell
+python -m py_compile backend\app\settings.py backend\app\services.py backend\app\text_polish.py tests\test_text_polish.py
+python -m pytest tests\test_text_polish.py tests\test_postprocess.py -p no:cacheprovider --basetemp=backend\data\pytest-tmp-polish-chain
+```
+
+Результат:
+
+```text
+tests/test_text_polish.py + tests/test_postprocess.py: 19 passed
+```
+
+Ограничение:
+
+- Полный pytest вне sandbox пользователь не разрешил. Полный явный прогон внутри sandbox дошел до выполнения тестов: `tests/test_postprocess.py` и `tests/test_text_polish.py` прошли, но `test_db.py`/`test_exports.py` снова уперлись в Windows ACL на временном каталоге pytest во время setup/cleanup. Это известная проблема окружения из предыдущих сессий.
