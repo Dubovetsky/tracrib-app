@@ -1,8 +1,31 @@
 from __future__ import annotations
 
+import os
+import site
+import sys
 from pathlib import Path
 
 from .exports import TranscriptSegment
+
+
+_CUDA_DLL_DIRS: list[object] = []
+_CUDA_DLL_DIRS_ADDED = False
+
+
+def _add_windows_cuda_dll_dirs() -> None:
+    global _CUDA_DLL_DIRS_ADDED
+    if _CUDA_DLL_DIRS_ADDED or sys.platform != "win32" or not hasattr(os, "add_dll_directory"):
+        return
+
+    candidates: list[Path] = []
+    for site_dir in site.getsitepackages():
+        root = Path(site_dir) / "nvidia"
+        candidates.extend([root / "cublas" / "bin", root / "cudnn" / "bin"])
+
+    for candidate in candidates:
+        if candidate.exists():
+            _CUDA_DLL_DIRS.append(os.add_dll_directory(str(candidate)))
+    _CUDA_DLL_DIRS_ADDED = True
 
 
 class FasterWhisperEngine:
@@ -25,6 +48,7 @@ class FasterWhisperEngine:
         if self._model is not None:
             return self._model
 
+        _add_windows_cuda_dll_dirs()
         try:
             self._model = WhisperModel(
                 self.model_name,
