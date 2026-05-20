@@ -9,6 +9,7 @@ from fastapi import UploadFile
 
 from .audio import preprocess_audio
 from .db import Database, utc_now
+from .diarization import DiarizationConfig, build_diarization_engine
 from .exports import write_exports
 from .settings import Settings
 from .text_polish import TextPolishConfig, polish_transcript
@@ -19,11 +20,22 @@ class JobService:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.db = Database(settings.db_path)
+        self.diarization_engine = build_diarization_engine(
+            DiarizationConfig(
+                enabled=settings.diarization_enabled,
+                model_name=settings.diarization_model,
+                device=settings.diarization_device,
+                min_speakers=settings.diarization_min_speakers,
+                max_speakers=settings.diarization_max_speakers,
+                auth_token=settings.diarization_auth_token,
+            )
+        )
         self.transcriber = FasterWhisperEngine(
             model_name=settings.whisper_model,
             device=settings.whisper_device,
             compute_type=settings.whisper_compute_type,
             fallback_compute_type=settings.whisper_fallback_compute_type,
+            diarization_engine=self.diarization_engine,
         )
         self.queue: asyncio.Queue[str] | None = None
         self.worker_task: asyncio.Task[None] | None = None

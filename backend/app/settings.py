@@ -5,6 +5,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+def optional_int_from_env(name: str) -> int | None:
+    value = os.getenv(name, "").strip()
+    if not value:
+        return None
+    parsed = int(value)
+    return parsed or None
+
+
 @dataclass(frozen=True)
 class Settings:
     data_dir: Path = Path(os.getenv("TRANSCRIB_APP_DATA_DIR", "backend/data"))
@@ -13,6 +21,12 @@ class Settings:
     whisper_compute_type: str = os.getenv("WHISPER_COMPUTE_TYPE", "float16")
     whisper_fallback_compute_type: str = os.getenv("WHISPER_FALLBACK_COMPUTE_TYPE", "int8_float16")
     language: str = "ru"
+    diarization_enabled: bool = os.getenv("DIARIZATION_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
+    diarization_model: str = os.getenv("DIARIZATION_MODEL", "pyannote/speaker-diarization-3.1")
+    diarization_device: str = os.getenv("DIARIZATION_DEVICE", os.getenv("WHISPER_DEVICE", "cuda"))
+    diarization_min_speakers: int | None = optional_int_from_env("DIARIZATION_MIN_SPEAKERS")
+    diarization_max_speakers: int | None = optional_int_from_env("DIARIZATION_MAX_SPEAKERS")
+    diarization_auth_token: str | None = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_TOKEN")
     text_polish_provider: str = os.getenv("TEXT_POLISH_PROVIDER", "auto")
     text_polish_providers: tuple[str, ...] = tuple(
         part.strip().lower()

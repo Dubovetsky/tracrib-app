@@ -253,6 +253,7 @@ def strip_trailing_artifact_text(text: str) -> str:
 
 def assign_speakers(segments: list[TranscriptSegment]) -> list[TranscriptSegment]:
     speaker_by_name: dict[str, str] = {}
+    name_by_diarized_speaker: dict[str, str] = {}
     unknown_speakers = ["Спикер 1", "Спикер 2"]
     current_speaker = unknown_speakers[0]
     previous: TranscriptSegment | None = None
@@ -262,11 +263,18 @@ def assign_speakers(segments: list[TranscriptSegment]) -> list[TranscriptSegment
         text = normalize_domain_terms(normalize_spaces(segment["text"]))
         explicit_name, text = extract_explicit_speaker(text)
         intro_name = extract_self_intro_name(text)
+        diarized_speaker = normalize_spaces(segment.get("speaker", ""))
 
         if explicit_name:
             current_speaker = speaker_by_name.setdefault(explicit_name, explicit_name)
+            if diarized_speaker:
+                name_by_diarized_speaker[diarized_speaker] = current_speaker
         elif intro_name and current_speaker.startswith("Спикер "):
             current_speaker = speaker_by_name.setdefault(intro_name, intro_name)
+            if diarized_speaker:
+                name_by_diarized_speaker[diarized_speaker] = current_speaker
+        elif diarized_speaker:
+            current_speaker = name_by_diarized_speaker.get(diarized_speaker, diarized_speaker)
         elif previous and is_likely_answer_turn(previous, segment):
             current_speaker = other_unknown_speaker(previous.get("speaker", current_speaker), unknown_speakers)
 
