@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterable, TypedDict
+from typing import Iterable, NotRequired, TypedDict
 
 
 class TranscriptSegment(TypedDict):
     start: float
     end: float
     text: str
+    speaker: NotRequired[str]
 
 
 def format_srt_timestamp(seconds: float) -> str:
@@ -25,12 +26,13 @@ def format_vtt_timestamp(seconds: float) -> str:
 def render_srt(segments: Iterable[TranscriptSegment]) -> str:
     blocks = []
     for index, segment in enumerate(segments, start=1):
+        text = render_subtitle_text(segment)
         blocks.append(
             "\n".join(
                 [
                     str(index),
                     f"{format_srt_timestamp(segment['start'])} --> {format_srt_timestamp(segment['end'])}",
-                    segment["text"].strip(),
+                    text,
                 ]
             )
         )
@@ -43,11 +45,19 @@ def render_vtt(segments: Iterable[TranscriptSegment]) -> str:
         blocks.extend(
             [
                 f"{format_vtt_timestamp(segment['start'])} --> {format_vtt_timestamp(segment['end'])}",
-                segment["text"].strip(),
+                render_subtitle_text(segment),
                 "",
             ]
         )
     return "\n".join(blocks)
+
+
+def render_subtitle_text(segment: TranscriptSegment) -> str:
+    text = segment["text"].strip()
+    speaker = segment.get("speaker", "").strip()
+    if speaker:
+        return f"{speaker}: {text}"
+    return text
 
 
 def write_exports(text: str, segments: list[TranscriptSegment], output_dir: Path) -> dict[str, Path]:

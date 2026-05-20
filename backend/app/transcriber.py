@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 from .exports import TranscriptSegment
+from .postprocess import postprocess_transcript
 
 
 _CUDA_DLL_DIRS: list[object] = []
@@ -72,11 +73,11 @@ class FasterWhisperEngine:
             beam_size=5,
         )
         segments: list[TranscriptSegment] = []
-        text_parts: list[str] = []
         for segment in raw_segments:
             text = segment.text.strip()
             if not text:
                 continue
             segments.append({"start": float(segment.start), "end": float(segment.end), "text": text})
-            text_parts.append(text)
-        return " ".join(text_parts), segments
+        if not segments:
+            return "", []
+        return postprocess_transcript(segments, language=language)
