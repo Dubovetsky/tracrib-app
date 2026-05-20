@@ -5,6 +5,7 @@ import site
 import sys
 from pathlib import Path
 
+from .diarization import DiarizationEngine, apply_diarization
 from .exports import TranscriptSegment
 from .postprocess import postprocess_transcript
 
@@ -36,11 +37,13 @@ class FasterWhisperEngine:
         device: str,
         compute_type: str,
         fallback_compute_type: str,
+        diarization_engine: DiarizationEngine | None = None,
     ) -> None:
         self.model_name = model_name
         self.device = device
         self.compute_type = compute_type
         self.fallback_compute_type = fallback_compute_type
+        self.diarization_engine = diarization_engine
         self._model = None
 
     def _load_model(self):
@@ -80,4 +83,10 @@ class FasterWhisperEngine:
             segments.append({"start": float(segment.start), "end": float(segment.end), "text": text})
         if not segments:
             return "", []
+        if self.diarization_engine is not None:
+            try:
+                turns = self.diarization_engine.diarize(audio_path)
+                segments = apply_diarization(segments, turns)
+            except Exception:
+                pass
         return postprocess_transcript(segments, language=language)

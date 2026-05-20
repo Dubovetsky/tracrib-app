@@ -650,3 +650,53 @@ tests/test_text_polish.py + tests/test_postprocess.py: 19 passed
 Ограничение:
 
 - Полный pytest вне sandbox пользователь не разрешил. Полный явный прогон внутри sandbox дошел до выполнения тестов: `tests/test_postprocess.py` и `tests/test_text_polish.py` прошли, но `test_db.py`/`test_exports.py` снова уперлись в Windows ACL на временном каталоге pytest во время setup/cleanup. Это известная проблема окружения из предыдущих сессий.
+
+## Сессия 7: опциональная акустическая diarization-модель
+
+Дата: 2026-05-20
+
+Пользователь попросил использовать `docs/project-prompt.md` и `docs/chat-history.md` и реализовать diarization-модель для обработки информации.
+
+Сделано:
+
+- Добавлен модуль `backend/app/diarization.py`.
+- Diarization реализована как опциональный слой через `pyannote.audio`, модель по умолчанию `pyannote/speaker-diarization-3.1`.
+- Добавлен `requirements-diarization.txt` с optional dependency `pyannote.audio>=3.3.0`.
+- Добавлены настройки:
+  - `DIARIZATION_ENABLED`
+  - `DIARIZATION_MODEL`
+  - `DIARIZATION_DEVICE`
+  - `DIARIZATION_MIN_SPEAKERS`
+  - `DIARIZATION_MAX_SPEAKERS`
+  - `HF_TOKEN` / `HUGGINGFACE_TOKEN`
+- Пустые `DIARIZATION_MIN_SPEAKERS` / `DIARIZATION_MAX_SPEAKERS` трактуются как unset, чтобы env без значения не ломал старт приложения.
+- `FasterWhisperEngine` теперь может получать diarization engine, запускать его после faster-whisper ASR и до локальной постобработки.
+- ASR-сегменты получают speaker label по максимальному временному overlap с голосовыми интервалами pyannote.
+- Raw labels pyannote вроде `SPEAKER_00` маппятся в стабильные `Спикер 1`, `Спикер 2`, ...
+- Если diarization выключена или модель падает/недоступна, транскрибация не падает и использует прежнюю текстовую разметку.
+- `postprocess.assign_speakers()` теперь сохраняет уже проставленные diarization-метки `speaker`, но явные текстовые метки и самопредставления по-прежнему могут уточнить имя.
+- Если diarization-метка вроде `Спикер 1` была уточнена явной текстовой меткой имени, последующие сегменты этого же diarization-спикера продолжают использовать найденное имя.
+- `JobService` и диагностический runner `backend/data/run_real_transcription.py` подключают diarization через общую конфигурацию.
+- README дополнен инструкцией по установке и env-переменным diarization.
+- `docs/project-prompt.md` дополнен текущим поведением diarization.
+
+Проверки:
+
+```powershell
+python -m py_compile backend\app\diarization.py backend\app\transcriber.py backend\app\services.py backend\app\settings.py backend\data\run_real_transcription.py tests\test_diarization.py
+python -m pytest tests\test_diarization.py tests\test_postprocess.py -p no:cacheprovider --basetemp=backend\data\pytest-tmp-diarization
+python -m pytest tests\test_db.py tests\test_exports.py tests\test_postprocess.py tests\test_text_polish.py tests\test_diarization.py -p no:cacheprovider --basetemp=backend\data\pytest-tmp-diarization-full
+```
+
+Результат:
+
+```text
+py_compile passed
+tests/test_diarization.py + tests/test_postprocess.py: 17 passed
+full explicit test set outside sandbox: 29 passed
+```
+
+Ограничения:
+
+- Реальный pyannote-прогон не выполнялся в этой сессии: для него нужно установить optional dependency и, вероятно, указать Hugging Face token с доступом к модели.
+- Первый полный pytest внутри sandbox снова уперся в известный Windows ACL `PermissionError: [WinError 5]` на pytest temp cleanup, но повторный полный прогон вне sandbox прошел успешно.
