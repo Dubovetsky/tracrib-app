@@ -14,6 +14,202 @@ _SELF_INTRO_RE = re.compile(
 )
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?…])\s+(?=[A-ZА-ЯЁ0-9\"«])")
 _SPACE_RE = re.compile(r"\s+")
+_DOTTED_EN_ABBREVIATION_RE = re.compile(r"\b(?:[A-Za-z]\.\s*){2,}")
+_TRAILING_ARTIFACT_RE = re.compile(
+    r"(?:^|\s+)"
+    r"(?:"
+    r"субтитры\s+(?:сделал[аи]?|подготовил[аи]?|создал[аи]?|перев[её]л[аи]?|добавил[аи]?)\s+[\w .@-]+|"
+    r"редактор\s+субтитров\s*[:\-—]?\s*[\w .@-]*|"
+    r"subtitles?\s+(?:by|created by|made by)\s+[\w .@-]+|"
+    r"caption(?:ing|s)?\s+by\s+[\w .@-]+|"
+    r"спасибо\s+за\s+просмотр|"
+    r"продолжение\s+следует"
+    r")"
+    r"[.!?…]*\s*$",
+    re.IGNORECASE,
+)
+_SPOKEN_SEPARATOR_RE = r"(?:\s+|[/\\+-]\s*)"
+_SPOKEN_IT_AGILE_ABBREVIATIONS = {
+    "API": (("эй", "пи", "ай"), ("а", "пи", "ай"), ("апи",)),
+    "UI": (("ю", "ай"),),
+    "UX": (("ю", "икс"),),
+    "MVP": (("эм", "ви", "пи"),),
+    "QA": (("кью", "эй"),),
+    "CI/CD": (("си", "ай", "си", "ди"),),
+    "CI": (("си", "ай"),),
+    "CD": (("си", "ди"),),
+    "PR": (("пи", "ар"),),
+    "SQL": (("эс", "кью", "эл"), ("эс", "кью", "эль"), ("сиквел",)),
+    "JSON": (("джей", "сон"), ("джейсон",)),
+    "XML": (("икс", "эм", "эл"), ("икс", "эм", "эль")),
+    "YAML": (("ямл",), ("ямал",), ("йамл",)),
+    "HTTP": (("эйч", "ти", "ти", "пи"), ("аш", "ти", "ти", "пи")),
+    "HTTPS": (("эйч", "ти", "ти", "пи", "эс"), ("аш", "ти", "ти", "пи", "эс")),
+    "HTML": (("эйч", "ти", "эм", "эл"), ("эйч", "ти", "эм", "эль"), ("аш", "ти", "эм", "эл"), ("аш", "ти", "эм", "эль")),
+    "CSS": (("си", "эс", "эс"),),
+    "JS": (("джей", "эс"),),
+    "TS": (("ти", "эс"),),
+    "REST": (("рест",),),
+    "CRUD": (("круд",),),
+    "SDK": (("эс", "ди", "кей"),),
+    "CLI": (("си", "эл", "ай"), ("си", "эль", "ай")),
+    "IDE": (("ай", "ди", "и"), ("ай", "ди", "е")),
+    "DB": (("ди", "би"),),
+    "DNS": (("ди", "эн", "эс"),),
+    "URL": (("ю", "ар", "эл"),),
+    "URI": (("ю", "ар", "ай"),),
+    "UUID": (("ю", "ю", "ай", "ди"),),
+    "ID": (("ай", "ди"), ("айди",)),
+    "IP": (("ай", "пи"), ("айпи",)),
+    "OAuth": (("о", "аут"), ("оу", "аут")),
+    "SSO": (("эс", "эс", "о"),),
+    "JWT": (("джей", "дабл", "ю", "ти"), ("джей", "дабл", "ю", "т")),
+    "RBAC": (("ар", "би", "эй", "си"),),
+    "ACL": (("эй", "си", "эл"), ("эй", "си", "эль")),
+    "OKR": (("о", "кей", "ар"),),
+    "KPI": (("кей", "пи", "ай"),),
+    "SLA": (("эс", "эл", "эй"), ("эс", "эль", "эй")),
+    "SLO": (("эс", "эл", "о"), ("эс", "эль", "о")),
+    "SLI": (("эс", "эл", "ай"), ("эс", "эль", "ай")),
+    "WIP": (("дабл", "ю", "ай", "пи"),),
+    "DoD": (("ди", "о", "ди"),),
+    "DoR": (("ди", "о", "ар"),),
+    "RACI": (("рейси",), ("раси",)),
+    "SMART": (("смарт",),),
+    "CPU": (("си", "пи", "ю"),),
+    "GPU": (("джи", "пи", "ю"),),
+    "RAM": (("рэм",),),
+    "AI": (("эй", "ай"),),
+    "ML": (("эм", "эл"), ("эм", "эль")),
+    "LLM": (("эл", "эл", "эм"), ("эль", "эль", "эм")),
+    "NLP": (("эн", "эл", "пи"), ("эн", "эль", "пи")),
+    "OCR": (("о", "си", "ар"),),
+    "ASR": (("эй", "эс", "ар"),),
+    "STT": (("эс", "ти", "ти"),),
+    "TTS": (("ти", "ти", "эс"),),
+    "ETL": (("и", "ти", "эл"), ("и", "ти", "эль")),
+    "BI": (("би", "ай"),),
+    "CRM": (("си", "ар", "эм"),),
+    "ERP": (("и", "ар", "пи"),),
+    "CMS": (("си", "эм", "эс"),),
+    "CDN": (("си", "ди", "эн"),),
+    "VPN": (("ви", "пи", "эн"),),
+    "SSH": (("эс", "эс", "эйч"), ("эс", "эс", "аш")),
+    "FTP": (("эф", "ти", "пи"),),
+    "SFTP": (("эс", "эф", "ти", "пи"),),
+    "SSL": (("эс", "эс", "эл"), ("эс", "эс", "эль")),
+    "TLS": (("ти", "эл", "эс"), ("ти", "эль", "эс")),
+    "TCP": (("ти", "си", "пи"),),
+    "UDP": (("ю", "ди", "пи"),),
+    "PDF": (("пи", "ди", "эф"),),
+    "CSV": (("си", "эс", "ви"),),
+    "XLSX": (("икс", "эл", "эс", "икс"), ("икс", "эль", "эс", "икс")),
+    "DOCX": (("док", "икс"), ("ди", "о", "си", "икс")),
+}
+_WRITTEN_IT_AGILE_REPLACEMENTS = {
+    "ci/cd": "CI/CD",
+    "okrs": "OKR",
+    "kpis": "KPI",
+    "api": "API",
+    "ui": "UI",
+    "ux": "UX",
+    "mvp": "MVP",
+    "qa": "QA",
+    "ci": "CI",
+    "cd": "CD",
+    "pr": "PR",
+    "sql": "SQL",
+    "json": "JSON",
+    "xml": "XML",
+    "yaml": "YAML",
+    "http": "HTTP",
+    "https": "HTTPS",
+    "html": "HTML",
+    "css": "CSS",
+    "js": "JS",
+    "ts": "TS",
+    "rest": "REST",
+    "crud": "CRUD",
+    "sdk": "SDK",
+    "cli": "CLI",
+    "ide": "IDE",
+    "db": "DB",
+    "dns": "DNS",
+    "url": "URL",
+    "uri": "URI",
+    "uuid": "UUID",
+    "id": "ID",
+    "ip": "IP",
+    "oauth": "OAuth",
+    "sso": "SSO",
+    "jwt": "JWT",
+    "rbac": "RBAC",
+    "acl": "ACL",
+    "okr": "OKR",
+    "kpi": "KPI",
+    "sla": "SLA",
+    "slo": "SLO",
+    "sli": "SLI",
+    "wip": "WIP",
+    "dod": "DoD",
+    "dor": "DoR",
+    "raci": "RACI",
+    "smart": "SMART",
+    "cpu": "CPU",
+    "gpu": "GPU",
+    "ram": "RAM",
+    "ai": "AI",
+    "ml": "ML",
+    "llm": "LLM",
+    "nlp": "NLP",
+    "ocr": "OCR",
+    "asr": "ASR",
+    "stt": "STT",
+    "tts": "TTS",
+    "etl": "ETL",
+    "bi": "BI",
+    "crm": "CRM",
+    "erp": "ERP",
+    "cms": "CMS",
+    "cdn": "CDN",
+    "vpn": "VPN",
+    "ssh": "SSH",
+    "ftp": "FTP",
+    "sftp": "SFTP",
+    "ssl": "SSL",
+    "tls": "TLS",
+    "tcp": "TCP",
+    "udp": "UDP",
+    "pdf": "PDF",
+    "csv": "CSV",
+    "xlsx": "XLSX",
+    "docx": "DOCX",
+}
+
+
+def _spoken_abbreviation_pattern(words: tuple[str, ...]) -> str:
+    escaped_words = [re.escape(word) for word in words]
+    return r"\b" + _SPOKEN_SEPARATOR_RE.join(escaped_words) + r"\b"
+
+
+def _written_abbreviation_pattern(source: str) -> str:
+    escaped = re.escape(source).replace(r"\/", r"\s*/\s*")
+    return r"\b" + escaped + r"\b"
+
+
+_SPOKEN_IT_AGILE_REPLACEMENT_RES = [
+    (re.compile(_spoken_abbreviation_pattern(words), re.IGNORECASE), replacement)
+    for replacement, variants in sorted(
+        _SPOKEN_IT_AGILE_ABBREVIATIONS.items(),
+        key=lambda item: max(len(words) for words in item[1]),
+        reverse=True,
+    )
+    for words in sorted(variants, key=len, reverse=True)
+]
+_WRITTEN_IT_AGILE_REPLACEMENT_RES = [
+    (re.compile(_written_abbreviation_pattern(source), re.IGNORECASE), replacement)
+    for source, replacement in _WRITTEN_IT_AGILE_REPLACEMENTS.items()
+]
 
 _MAX_PARAGRAPH_SENTENCES = 3
 _MAX_PARAGRAPH_CHARS = 520
@@ -23,8 +219,36 @@ _ANSWER_GAP_SECONDS = 12.0
 def postprocess_transcript(
     segments: list[TranscriptSegment], language: str = "ru"
 ) -> tuple[str, list[TranscriptSegment]]:
-    processed_segments = assign_speakers(segments)
+    cleaned_segments = strip_trailing_artifacts(segments)
+    processed_segments = assign_speakers(cleaned_segments)
     return render_readable_text(processed_segments, language=language), processed_segments
+
+
+def strip_trailing_artifacts(segments: list[TranscriptSegment]) -> list[TranscriptSegment]:
+    processed = list(segments)
+
+    for index in range(len(processed) - 1, -1, -1):
+        original_text = normalize_spaces(processed[index]["text"])
+        cleaned_text = strip_trailing_artifact_text(original_text)
+        if not cleaned_text:
+            processed.pop(index)
+            continue
+
+        if cleaned_text != original_text:
+            processed[index] = {**processed[index], "text": cleaned_text}
+        break
+
+    return processed
+
+
+def strip_trailing_artifact_text(text: str) -> str:
+    cleaned = normalize_spaces(text)
+    while cleaned:
+        next_cleaned = normalize_spaces(_TRAILING_ARTIFACT_RE.sub("", cleaned))
+        if next_cleaned == cleaned:
+            break
+        cleaned = next_cleaned
+    return cleaned
 
 
 def assign_speakers(segments: list[TranscriptSegment]) -> list[TranscriptSegment]:
@@ -35,7 +259,7 @@ def assign_speakers(segments: list[TranscriptSegment]) -> list[TranscriptSegment
     processed: list[TranscriptSegment] = []
 
     for segment in segments:
-        text = normalize_spaces(segment["text"])
+        text = normalize_domain_terms(normalize_spaces(segment["text"]))
         explicit_name, text = extract_explicit_speaker(text)
         intro_name = extract_self_intro_name(text)
 
@@ -132,7 +356,11 @@ def protect_common_abbreviations(text: str, language: str) -> str:
     }
     for source, target in replacements.items():
         text = text.replace(source, target)
-    return text
+    return _DOTTED_EN_ABBREVIATION_RE.sub(_protect_dotted_abbreviation_match, text)
+
+
+def _protect_dotted_abbreviation_match(match: re.Match[str]) -> str:
+    return match.group(0).replace(".", "<dot>")
 
 
 def _restore_abbreviation_marks(text: str) -> str:
@@ -160,6 +388,15 @@ def normalize_name(name: str) -> str:
 
 def normalize_spaces(text: str) -> str:
     return _SPACE_RE.sub(" ", text).strip()
+
+
+def normalize_domain_terms(text: str) -> str:
+    normalized = text
+    for pattern, replacement in _SPOKEN_IT_AGILE_REPLACEMENT_RES:
+        normalized = pattern.sub(replacement, normalized)
+    for pattern, replacement in _WRITTEN_IT_AGILE_REPLACEMENT_RES:
+        normalized = pattern.sub(replacement, normalized)
+    return normalize_spaces(normalized)
 
 
 def is_likely_answer_turn(previous: TranscriptSegment, segment: TranscriptSegment) -> bool:

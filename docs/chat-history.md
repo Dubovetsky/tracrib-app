@@ -525,3 +525,76 @@ python -m pytest tests --basetemp=tests\.pytest-tmp -o cache_dir=.pytest_cache
 - В `docs/project-prompt.md` добавлен раздел `Documentation workflow`.
 - В `docs/project-prompt.md` добавлен раздел `Current transcript postprocessing behavior`.
 - История текущей сессии добавлена в конец `docs/chat-history.md` без переписывания предыдущего содержания.
+
+## Сессия 5: чистка финальных подписей и IT/Agile-аббревиатуры
+
+Дата: 2026-05-20
+
+Пользователь попросил использовать `docs/project-prompt.md` и `docs/chat-history.md` и доработать постобработку:
+
+```text
+1. убрать в конце конечного текста фразу "Субтитры сделал DimaTorzok" и прочие ненужные подписи не относящиеся к тексту
+2. научиться и определять англоязычные аббревиатуры из сферы IT и Agile
+```
+
+Сделано:
+
+- В `backend/app/postprocess.py` добавлена чистка хвоста транскрипта перед назначением спикеров.
+- Из конца результата удаляются служебные подписи и похожие финальные артефакты: `Субтитры сделал ...`, `Subtitles by ...`, `captioning by ...`, `редактор субтитров ...`, `Спасибо за просмотр`, `Продолжение следует`.
+- Чистка применяется только к последним сегментам или к хвосту последнего полезного сегмента, чтобы не удалять похожие фразы из середины содержательного текста.
+- Добавлена нормализация частых англоязычных IT/Agile-аббревиатур и русских фонетических записей: `эй пи ай`/`api` -> `API`, `ю ай` -> `UI`, `ю икс` -> `UX`, `эм ви пи` -> `MVP`, `си ай си ди`/`ci/cd` -> `CI/CD`, `кью эй` -> `QA`, `пи ар` -> `PR`, `эс кью эл` -> `SQL`, `джей сон` -> `JSON`, `о кей ар` -> `OKR`, `кей пи ай` -> `KPI`, а также ряд технических сокращений вроде `HTTP`, `REST`, `SDK`, `CLI`, `DB`, `JWT`, `RBAC`, `CPU`, `GPU`, `RAM`.
+- Разбиение на предложения теперь защищает англоязычные сокращения с точками вроде `A. P. I.`, чтобы они не дробили абзацы.
+- В `tests/test_postprocess.py` добавлены регрессионные тесты на удаление финальных подписей, нормализацию IT/Agile-аббревиатур и защиту dotted abbreviations.
+- В `docs/project-prompt.md` дополнен раздел `Current transcript postprocessing behavior`.
+
+Проверки:
+
+```powershell
+python -m py_compile backend\app\postprocess.py tests\test_postprocess.py
+python -m pytest tests\test_postprocess.py --basetemp=tests\.pytest-tmp -o cache_dir=tests\.pytest-cache
+python -m pytest tests\test_db.py tests\test_exports.py tests\test_postprocess.py --basetemp=backend\data\pytest-tmp -o cache_dir=backend\data\.pytest_cache
+```
+
+Результат:
+
+```text
+py_compile passed
+tests/test_postprocess.py: 9 passed
+all explicit tests: 14 passed
+```
+
+Ограничение:
+
+- Запуск pytest внутри sandbox снова упирался в Windows ACL на временных каталогах pytest. Полный явный прогон тестовых файлов выполнен вне sandbox с `basetemp` и `cache_dir` внутри `backend\data`.
+
+### Уточнение по пункту 2
+
+После уточнения пользователя:
+
+```text
+теперь реализуй пункт 2. надо чтобы англоязычные аббревиатуры определялись и записывались правильно
+```
+
+Сделано:
+
+- Нормализация IT/Agile-аббревиатур расширена из простого списка замен в полноценный локальный словарь written- и spoken-форм.
+- Spoken-формы распознают типичные русские транскрипции английских букв после ASR: `эй пи ай`, `ю ай`, `ю икс`, `эм ви пи`, `си ай си ди`, `ди о ди`, `дабл ю ай пи`, `эс кью эл`, `джей сон`, `эйч ти ти пи эс`, `джей эс`, `ти эс`, `си эс эс`, `эй ай`, `эл эл эм`, `эн эл пи`, `о си ар`, `эй эс ар`, `и ти эл` и другие.
+- Добавлены IT/Agile сокращения: `API`, `UI`, `UX`, `MVP`, `QA`, `CI/CD`, `PR`, `DoD`, `DoR`, `WIP`, `OKR`, `KPI`, `SLA`, `SLO`, `SLI`, `SQL`, `JSON`, `XML`, `YAML`, `HTTP`, `HTTPS`, `HTML`, `CSS`, `JS`, `TS`, `REST`, `CRUD`, `SDK`, `CLI`, `IDE`, `DB`, `DNS`, `URL`, `URI`, `UUID`, `ID`, `IP`, `OAuth`, `SSO`, `JWT`, `RBAC`, `ACL`, `AI`, `ML`, `LLM`, `NLP`, `OCR`, `ASR`, `STT`, `TTS`, `ETL`, `BI`, `CRM`, `ERP`, `CMS`, `CDN`, `VPN`, `SSH`, `FTP`, `SFTP`, `SSL`, `TLS`, `TCP`, `UDP`, `PDF`, `CSV`, `XLSX`, `DOCX`.
+- Правила spoken-замен теперь обрабатываются от более длинных сокращений к коротким, чтобы `си ди эн` превращалось в `CDN`, а не в `CD эн`.
+- Разделители внутри spoken-аббревиатур ограничены пробелом/дефисом/слэшем, чтобы правило не склеивало слова через запятую и не давало ложные срабатывания.
+- Добавлены тесты на длинные spoken-аббревиатуры, приоритет длинных замен и AI/data-сокращения.
+
+Проверки:
+
+```powershell
+python -m py_compile backend\app\postprocess.py tests\test_postprocess.py
+python -m pytest tests\test_postprocess.py -p no:cacheprovider --basetemp=backend\data\pytest-tmp-postprocess2
+python -m pytest tests\test_db.py tests\test_exports.py tests\test_postprocess.py --basetemp=backend\data\pytest-tmp -o cache_dir=backend\data\.pytest_cache
+```
+
+Результат:
+
+```text
+tests/test_postprocess.py: 12 passed
+all explicit tests: 17 passed
+```
