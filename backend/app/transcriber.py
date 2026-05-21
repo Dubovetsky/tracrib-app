@@ -3,14 +3,17 @@ from __future__ import annotations
 import os
 import site
 import sys
+import logging
 from pathlib import Path
 from typing import NamedTuple
 
 from .diarization import DiarizationEngine, apply_diarization
-from .exports import TranscriptSegment
+from .exports import TranscriptSegment, TranscriptWord
+from .hf_env import remove_dead_local_proxy
 from .postprocess import postprocess_transcript
 
 
+LOGGER = logging.getLogger("transcrib_app.backend")
 _CUDA_DLL_DIRS: list[object] = []
 _CUDA_DLL_DIRS_ADDED = False
 
@@ -51,12 +54,16 @@ class FasterWhisperEngine:
         compute_type: str,
         fallback_compute_type: str,
         diarization_engine: DiarizationEngine | None = None,
+        initial_prompt: str | None = None,
+        hotwords: str | None = None,
     ) -> None:
         self.model_name = model_name
         self.device = device
         self.compute_type = compute_type
         self.fallback_compute_type = fallback_compute_type
         self.diarization_engine = diarization_engine
+        self.initial_prompt = initial_prompt
+        self.hotwords = hotwords
         self._model = None
 
     def _load_model(self):
@@ -64,6 +71,7 @@ class FasterWhisperEngine:
             return self._model
 
         _add_windows_cuda_dll_dirs()
+        remove_dead_local_proxy()
         from faster_whisper import WhisperModel
 
         attempts = [
@@ -101,13 +109,25 @@ class FasterWhisperEngine:
             language=language,
             vad_filter=True,
             beam_size=5,
+            word_timestamps=True,
+            condition_on_previous_text=False,
+            initial_prompt=self.initial_prompt or None,
+            hotwords=self.hotwords or None,
         )
         segments: list[TranscriptSegment] = []
         for segment in raw_segments:
             text = segment.text.strip()
             if not text:
                 continue
-            segments.append({"start": float(segment.start), "end": float(segment.end), "text": text})
+            transcript_segment: TranscriptSegment = {
+                "start": float(segment.start),
+                "end": float(segment.end),
+                "text": text,
+            }
+            words = extract_segment_words(segment)
+            if words:
+                transcript_segment["words"] = words
+            segments.append(transcript_segment)
         if not segments:
             return "", []
         if self.diarization_engine is not None:
@@ -115,5 +135,20 @@ class FasterWhisperEngine:
                 turns = self.diarization_engine.diarize(audio_path)
                 segments = apply_diarization(segments, turns)
             except Exception:
-                pass
+                LOGGER.exception("Diarization failed; falling back to text-only speaker assignment.")
         return postprocess_transcript(segments, language=language)
+
+
+def extract_segment_words(segment: object) -> list[TranscriptWord]:
+    words = getattr(segment, "words", None) or []
+    extracted: list[TranscriptWord] = []
+    for word in words:
+        text = str(getattr(word, "word", "")).strip()
+        if not text:
+            continue
+        start = getattr(word, "start", None)
+        end = getattr(word, "end", None)
+        if start is None or end is None:
+            continue
+        extracted.append({"start": float(start), "end": float(end), "word": text})
+    return extracted

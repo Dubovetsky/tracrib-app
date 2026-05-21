@@ -1,10 +1,12 @@
 from types import SimpleNamespace
+from pathlib import Path
 
 from backend.app.services import build_readable_error
+from backend.app.hf_env import remove_dead_local_proxy
 from backend.app.transcriber import FasterWhisperEngine, TranscriptionError
 
 
-def test_faster_whisper_load_model_falls_back_to_cpu_int8(monkeypatch, tmp_path):
+def test_faster_whisper_load_model_falls_back_to_cpu_int8(monkeypatch):
     attempts: list[tuple[str, str]] = []
 
     class FakeWhisperModel:
@@ -29,7 +31,7 @@ def test_faster_whisper_load_model_falls_back_to_cpu_int8(monkeypatch, tmp_path)
         fallback_compute_type="int8_float16",
     )
 
-    text, segments = engine.transcribe(tmp_path / "input.wav")
+    text, segments = engine.transcribe(Path("input.wav"))
 
     assert attempts == [("cuda", "float16"), ("cuda", "int8_float16"), ("cpu", "int8")]
     assert engine.device == "cpu"
@@ -76,3 +78,50 @@ def test_build_readable_error_mentions_cuda_fallback_and_log_path():
     assert "CUDA int8_float16" in error
     assert "CPU int8" in error
     assert "backend/data/logs/backend.log" in error
+
+
+def test_faster_whisper_uses_quality_hints_and_word_timestamps(monkeypatch):
+    captured_kwargs = {}
+
+    class FakeWhisperModel:
+        def __init__(self, model_name: str, device: str, compute_type: str) -> None:
+            pass
+
+        def transcribe(self, audio_path: str, **kwargs):
+            captured_kwargs.update(kwargs)
+            word = SimpleNamespace(start=0.0, end=0.4, word="EADR")
+            segment = SimpleNamespace(start=0.0, end=0.4, text="EADR", words=[word])
+            return [segment], None
+
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "faster_whisper",
+        SimpleNamespace(WhisperModel=FakeWhisperModel),
+    )
+
+    engine = FasterWhisperEngine(
+        model_name="test-model",
+        device="cuda",
+        compute_type="float16",
+        fallback_compute_type="int8_float16",
+        initial_prompt="EADR ADR Jira",
+        hotwords="EADR ADR Jira",
+    )
+
+    _, segments = engine.transcribe(Path("input.wav"))
+
+    assert captured_kwargs["word_timestamps"] is True
+    assert captured_kwargs["condition_on_previous_text"] is False
+    assert captured_kwargs["initial_prompt"] == "EADR ADR Jira"
+    assert captured_kwargs["hotwords"] == "EADR ADR Jira"
+    assert segments[0]["text"] == "EADR"
+
+
+def test_remove_dead_local_proxy_keeps_real_proxy(monkeypatch):
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:9")
+    monkeypatch.setenv("HTTP_PROXY", "http://proxy.example:8080")
+
+    remove_dead_local_proxy()
+
+    assert "HTTPS_PROXY" not in __import__("os").environ
+    assert __import__("os").environ["HTTP_PROXY"] == "http://proxy.example:8080"

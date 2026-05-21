@@ -4,11 +4,18 @@ from pathlib import Path
 from typing import Iterable, NotRequired, TypedDict
 
 
+class TranscriptWord(TypedDict):
+    start: float
+    end: float
+    word: str
+
+
 class TranscriptSegment(TypedDict):
     start: float
     end: float
     text: str
     speaker: NotRequired[str]
+    words: NotRequired[list[TranscriptWord]]
 
 
 def format_srt_timestamp(seconds: float) -> str:

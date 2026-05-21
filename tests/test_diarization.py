@@ -1,4 +1,10 @@
-from backend.app.diarization import SpeakerTurn, apply_diarization, best_speaker_for_segment, overlap_seconds
+from backend.app.diarization import (
+    SpeakerTurn,
+    apply_diarization,
+    best_speaker_for_segment,
+    load_audio_for_pyannote,
+    overlap_seconds,
+)
 from backend.app.postprocess import postprocess_transcript
 
 
@@ -33,6 +39,32 @@ def test_apply_diarization_maps_raw_labels_to_numbered_speakers():
     assert diarized[0]["speaker"] == "Спикер 1"
     assert diarized[1]["speaker"] == "Спикер 2"
     assert diarized[2]["speaker"] == "Спикер 2"
+
+def test_apply_diarization_splits_single_asr_segment_by_word_timestamps():
+    segments = [
+        {
+            "start": 0.0,
+            "end": 4.0,
+            "text": "РџРµСЂРІС‹Р№ РѕС‚РІРµС‡Р°РµС‚ РІС‚РѕСЂРѕР№.",
+            "words": [
+                {"start": 0.0, "end": 0.8, "word": "РџРµСЂРІС‹Р№"},
+                {"start": 0.8, "end": 1.6, "word": "РѕС‚РІРµС‡Р°РµС‚"},
+                {"start": 2.2, "end": 3.0, "word": "РІС‚РѕСЂРѕР№."},
+            ],
+        }
+    ]
+    turns = [
+        SpeakerTurn(0.0, 2.0, "SPEAKER_00"),
+        SpeakerTurn(2.0, 4.0, "SPEAKER_01"),
+    ]
+
+    diarized = apply_diarization(segments, turns)
+
+    assert len(diarized) == 2
+    assert diarized[0]["speaker"].endswith("1")
+    assert diarized[0]["text"] == "РџРµСЂРІС‹Р№ РѕС‚РІРµС‡Р°РµС‚"
+    assert diarized[1]["speaker"].endswith("2")
+    assert diarized[1]["text"] == "РІС‚РѕСЂРѕР№."
 
 
 def test_postprocess_preserves_diarized_speakers():

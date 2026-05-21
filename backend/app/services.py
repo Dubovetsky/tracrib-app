@@ -59,6 +59,8 @@ class JobService:
             compute_type=settings.whisper_compute_type,
             fallback_compute_type=settings.whisper_fallback_compute_type,
             diarization_engine=self.diarization_engine,
+            initial_prompt=settings.whisper_initial_prompt,
+            hotwords=settings.whisper_hotwords,
         )
         self.queue: asyncio.Queue[str] | None = None
         self.worker_task: asyncio.Task[None] | None = None

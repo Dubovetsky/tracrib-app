@@ -1,0 +1,24 @@
+{
+  "reference_status": "TODO_HUMAN",
+  "audio": "../audio/sample_02.m4a",
+  "speakers": [
+    {
+      "id": "SPEAKER_00",
+      "name": null,
+      "notes": "Replace with known participant name if available."
+    },
+    {
+      "id": "SPEAKER_01",
+      "name": null,
+      "notes": "Add or remove speaker entries after human review."
+    }
+  ],
+  "turns": [
+    {
+      "start": 0.0,
+      "end": 0.0,
+      "speaker": "SPEAKER_00",
+      "text": "TODO: human-labeled utterance"
+    }
+  ]
+}

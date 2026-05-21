@@ -1,5 +1,18 @@
 # Project Prompt
 
+## Current ASR stabilization rule
+
+- faster-whisper should run with `word_timestamps=True`, `condition_on_previous_text=False`, and domain hints via `WHISPER_INITIAL_PROMPT` / `WHISPER_HOTWORDS`.
+- Default hints include project terms that ASR previously confused: `EADR`, `ADR`, `IDR`, `DR`, `RFC`, `Jira`, `AirPoint`, `GSM`, `CM`, `TMH`, `QA`, and common IT/Agile abbreviations.
+- Diarization must prefer word-level splitting when ASR words are available: a single Whisper segment can become multiple transcript segments if pyannote detects speaker changes inside it.
+- Diarization is the default quality path, not an optional nice-to-have: `DIARIZATION_ENABLED` defaults to `1`, `DIARIZATION_MIN_SPEAKERS` defaults to `2`, and `DIARIZATION_MAX_SPEAKERS` defaults to `4`.
+- `pyannote.audio` belongs to the main backend dependency set in `requirements.txt`; `requirements-diarization.txt` is kept only for backward compatibility with older notes.
+- pyannote diarization requires accepted Hugging Face access to both `pyannote/speaker-diarization-3.1` and gated dependency `pyannote/segmentation-3.0`.
+- Backend must remove dead local proxy env values such as `127.0.0.1:9` before Hugging Face calls.
+- Pyannote should receive preloaded audio via `torchaudio.load()` instead of relying on pyannote 4 / torchcodec file decoding on Windows.
+- Segment-level maximum overlap between ASR segment and speaker turn is only a fallback for cases without word timestamps.
+- Diarization failures must be logged and must not fail the transcription job; the service falls back to text-only speaker assignment.
+
 Ты — Senior Fullstack Developer, Solution Architect и Tech Lead.
 
 Работаем над проектом локального web-сервиса для транскрибации аудио в текст.

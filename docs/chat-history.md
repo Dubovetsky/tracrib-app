@@ -1,5 +1,54 @@
 # Chat History
 
+## Сессия 9: стабилизация ASR и diarization mapping
+
+Дата: 2026-05-20
+
+Запрос: пользователь указал на плохое разделение спикеров, смешивание реплик разных людей, слабое определение количества голосов, ошибки по доменным аббревиатурам вроде `EADR`, и попросил найти максимально простое решение в условиях почти исчерпанного лимита разработки.
+
+Сделано:
+
+- В `backend/app/transcriber.py` faster-whisper теперь запускается с `word_timestamps=True`, `condition_on_previous_text=False`, `initial_prompt` и `hotwords`.
+- В `backend/app/settings.py` добавлены `WHISPER_INITIAL_PROMPT`, `WHISPER_HOTWORDS` и дефолтный ASR glossary с `EADR`, `ADR`, `IDR`, `DR`, `RFC`, `Jira`, `AirPoint`, `GSM`, `CM`, `TMH`, `QA` и частыми IT/Agile терминами.
+- В `backend/app/diarization.py` исправлен главный failure mode: если один ASR-сегмент содержит слова нескольких спикеров, он режется по word timestamps и pyannote speaker turns. Старый maximum-overlap на весь сегмент оставлен только fallback.
+- В `backend/app/transcriber.py` ошибки diarization больше не проглатываются молча: они логируются через backend logger, но job не падает.
+- В `backend/app/exports.py` `TranscriptSegment` расширен optional `words`, чтобы word-level данные доходили до diarization layer.
+- В `tests/test_diarization.py` добавлен регрессионный тест на split одного ASR-сегмента на две реплики по словам.
+- В `tests/test_transcriber_fallback.py` добавлен тест, что transcriber реально передает `word_timestamps`, `condition_on_previous_text`, `initial_prompt`, `hotwords`.
+- README и `docs/project-prompt.md` дополнены правилами ASR quality path.
+- После уточнения пользователя исправлен недоделанный дефолт: diarization больше не ручной optional flag. `DIARIZATION_ENABLED` по умолчанию `1`, `DIARIZATION_MIN_SPEAKERS=2`, `DIARIZATION_MAX_SPEAKERS=4`, а `pyannote.audio` перенесен в основной `requirements.txt`.
+
+Проверки:
+
+```powershell
+python -m py_compile backend\app\exports.py backend\app\settings.py backend\app\transcriber.py backend\app\services.py backend\app\diarization.py
+python -m pytest tests\test_diarization.py tests\test_transcriber_fallback.py tests\test_postprocess.py tests\test_text_polish.py -p no:cacheprovider
+python -m pytest tests\test_db.py tests\test_exports.py tests\test_postprocess.py tests\test_text_polish.py tests\test_diarization.py tests\test_transcriber_fallback.py -p no:cacheprovider
+```
+
+Результат:
+
+```text
+py_compile passed
+29 passed
+34 passed
+```
+
+Ограничения:
+
+- Реальный pyannote-прогон на новых настройках в этой сессии не выполнялся; для него нужны установленный `requirements-diarization.txt`, `DIARIZATION_ENABLED=1`, `HF_TOKEN` и доступ к модели.
+- Команда `pytest tests` без явного списка файлов падает из-за мусорных ACL-закрытых каталогов `tests/pytest-cache-files-*`; это отдельный infra-долг, а не регрессия ASR.
+- Текстовый слой не может надежно определить имена людей из воздуха; имена появляются только из явных фраз/контекста. Для устойчивого name mapping нужен отдельный metadata/UI layer со списком участников встречи.
+
+Дополнение по настройке Hugging Face:
+
+- Пользователь предоставил HF token; токен сохранен в пользовательскую переменную окружения Windows `HF_TOKEN`, сам токен в репозиторий не записывался.
+- Также сохранены пользовательские env: `DIARIZATION_ENABLED=1`, `DIARIZATION_MIN_SPEAKERS=2`, `DIARIZATION_MAX_SPEAKERS=4`, `HF_HOME=backend/data/huggingface`, `HUGGINGFACE_HUB_CACHE=backend/data/huggingface/hub`, `HF_HUB_DISABLE_XET=1`.
+- Проверка `HfApi.whoami` прошла, аккаунт распознан; доступ к `pyannote/speaker-diarization-3.1` подтвержден.
+- Реальная загрузка pipeline вне sandbox дошла до gated dependency `pyannote/segmentation-3.0` и получила `403`; нужно принять условия доступа на странице `https://huggingface.co/pyannote/segmentation-3.0`.
+- Добавлен `backend/app/hf_env.py`, который удаляет мертвый proxy `127.0.0.1:9` перед Hugging Face вызовами.
+- `PyannoteDiarizationEngine.diarize()` теперь загружает WAV через `torchaudio.load()` и передает pyannote preloaded waveform, чтобы не зависеть от сломанного `torchcodec` decoder path.
+
 Дата: 2026-05-20
 
 Этот файл фиксирует рабочую историю проекта локального web-сервиса для транскрибации аудио в текст. Он нужен как контекст для следующих сессий разработки: что было сделано, какие решения приняты, какие проверки прошли и какие проблемы уже встречались.

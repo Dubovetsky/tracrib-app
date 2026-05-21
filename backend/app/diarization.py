@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Protocol
 
-from .exports import TranscriptSegment
+from .exports import TranscriptSegment, TranscriptWord
 
 
 @dataclass(frozen=True)
@@ -40,8 +40,10 @@ class PyannoteDiarizationEngine:
             return self._pipeline
 
         from .transcriber import _add_windows_cuda_dll_dirs
+        from .hf_env import remove_dead_local_proxy
 
         _add_windows_cuda_dll_dirs()
+        remove_dead_local_proxy()
         from pyannote.audio import Pipeline
 
         token = self.config.auth_token or os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_TOKEN")
@@ -70,11 +72,18 @@ class PyannoteDiarizationEngine:
         if self.config.max_speakers is not None:
             kwargs["max_speakers"] = self.config.max_speakers
 
-        diarization = pipeline(str(audio_path), **kwargs)
+        diarization = pipeline(load_audio_for_pyannote(audio_path), **kwargs)
         turns: list[SpeakerTurn] = []
         for turn, _, speaker in diarization.itertracks(yield_label=True):
             turns.append(SpeakerTurn(float(turn.start), float(turn.end), str(speaker)))
         return turns
+
+
+def load_audio_for_pyannote(audio_path: Path) -> dict[str, object]:
+    import torchaudio
+
+    waveform, sample_rate = torchaudio.load(str(audio_path))
+    return {"waveform": waveform, "sample_rate": sample_rate}
 
 
 def build_diarization_engine(config: DiarizationConfig) -> DiarizationEngine | None:
@@ -92,6 +101,10 @@ def apply_diarization(
     processed: list[TranscriptSegment] = []
 
     for segment in segments:
+        if segment.get("words"):
+            processed.extend(split_segment_by_diarized_words(segment, turn_list, speaker_labels))
+            continue
+
         raw_speaker = best_speaker_for_segment(segment, turn_list)
         if not raw_speaker:
             processed.append(segment)
@@ -103,10 +116,62 @@ def apply_diarization(
     return processed
 
 
+def split_segment_by_diarized_words(
+    segment: TranscriptSegment,
+    turns: Iterable[SpeakerTurn],
+    speaker_labels: dict[str, str],
+) -> list[TranscriptSegment]:
+    pieces: list[TranscriptSegment] = []
+    current_speaker = ""
+    current_words: list[TranscriptWord] = []
+
+    for word in segment.get("words", []):
+        raw_speaker = best_speaker_for_word(word, turns) or best_speaker_for_segment(segment, turns)
+        speaker = (
+            speaker_labels.setdefault(raw_speaker, f"Спикер {len(speaker_labels) + 1}")
+            if raw_speaker
+            else ""
+        )
+        if current_words and speaker != current_speaker:
+            pieces.append(build_segment_piece(current_words, current_speaker))
+            current_words = []
+        current_speaker = speaker
+        current_words.append(word)
+
+    if current_words:
+        pieces.append(build_segment_piece(current_words, current_speaker))
+
+    return pieces or [segment]
+
+
+def build_segment_piece(words: list[TranscriptWord], speaker: str) -> TranscriptSegment:
+    text = " ".join(word["word"].strip() for word in words if word["word"].strip()).strip()
+    piece: TranscriptSegment = {
+        "start": words[0]["start"],
+        "end": words[-1]["end"],
+        "text": text,
+    }
+    if speaker:
+        piece["speaker"] = speaker
+    return piece
+
+
+def best_speaker_for_word(word: TranscriptWord, turns: Iterable[SpeakerTurn]) -> str | None:
+    center = (word["start"] + word["end"]) / 2
+    for turn in turns:
+        if turn.start <= center <= turn.end:
+            return turn.speaker
+    return best_speaker_for_interval(word["start"], word["end"], turns)
+
+
 def best_speaker_for_segment(segment: TranscriptSegment, turns: Iterable[SpeakerTurn]) -> str | None:
+    return best_speaker_for_interval(segment["start"], segment["end"], turns)
+
+
+def best_speaker_for_interval(start: float, end: float, turns: Iterable[SpeakerTurn]) -> str | None:
     scores: dict[str, float] = {}
     for turn in turns:
-        overlap = overlap_seconds(segment["start"], segment["end"], turn.start, turn.end)
+        overlap = overlap_seconds(start, end, turn.start, turn.end)
         if overlap > 0:
             scores[turn.speaker] = scores.get(turn.speaker, 0.0) + overlap
 

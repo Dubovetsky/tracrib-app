@@ -1,5 +1,12 @@
 # Transcrib App
 
+## ASR quality notes
+
+- faster-whisper uses `word_timestamps=True`, `condition_on_previous_text=False`, `initial_prompt`, and `hotwords` to reduce long-context hallucinations and improve domain terms such as `EADR`, `ADR`, `IDR`, `RFC`, `Jira`, `AirPoint`, `GSM`, and `QA`.
+- With diarization enabled, word timestamps are used to split one ASR segment into multiple speaker turns when pyannote detects a speaker change inside that segment. Segment-level maximum overlap is now only a fallback when words are unavailable.
+- `WHISPER_INITIAL_PROMPT` and `WHISPER_HOTWORDS` can be overridden per deployment; keep them short and domain-specific.
+- pyannote diarization requires accepted Hugging Face access for both `pyannote/speaker-diarization-3.1` and its gated dependency `pyannote/segmentation-3.0`.
+
 Локальный web-сервис для транскрибации аудио в текст на Windows 11 с NVIDIA GPU. ASR работает локально через faster-whisper; опциональная diarization-модель может разделять реплики по голосам; опциональная облачная постобработка может исправлять текст, слова и IT/Agile-аббревиатуры с fallback на локальные правила. MVP не делает real-time транскрибацию.
 
 ## Стек
@@ -75,8 +82,12 @@ $env:WHISPER_MODEL="large-v3-turbo"
 $env:WHISPER_DEVICE="cuda"
 $env:WHISPER_COMPUTE_TYPE="float16"
 $env:WHISPER_FALLBACK_COMPUTE_TYPE="int8_float16"
+$env:WHISPER_INITIAL_PROMPT="Встреча на русском языке. Термины: EADR, ADR, IDR, RFC, Jira, AirPoint, GSM, QA."
+$env:WHISPER_HOTWORDS="EADR ADR IDR RFC Jira AirPoint GSM QA"
 $env:TEXT_POLISH_PROVIDER="local"
-$env:DIARIZATION_ENABLED="0"
+$env:DIARIZATION_ENABLED="1"
+$env:DIARIZATION_MIN_SPEAKERS="2"
+$env:DIARIZATION_MAX_SPEAKERS="4"
 ```
 
 Backend автоматически добавляет Windows CUDA DLL directories из Python packages `nvidia-cublas-cu12` и `nvidia-cudnn-cu12` перед импортом faster-whisper. Если CUDA runtime всё равно недоступен, загрузка модели идёт по цепочке:
@@ -90,7 +101,6 @@ Backend автоматически добавляет Windows CUDA DLL directori
 Опциональная diarization по голосам:
 
 ```powershell
-pip install -r requirements-diarization.txt
 $env:DIARIZATION_ENABLED="1"
 $env:DIARIZATION_MODEL="pyannote/speaker-diarization-3.1"
 $env:DIARIZATION_DEVICE="cuda"
@@ -98,6 +108,10 @@ $env:DIARIZATION_MIN_SPEAKERS="2"
 $env:DIARIZATION_MAX_SPEAKERS="4"
 $env:HF_TOKEN="..."
 ```
+
+Сейчас это не optional path: `pyannote.audio` входит в основной `requirements.txt`, а `DIARIZATION_ENABLED`, `DIARIZATION_MIN_SPEAKERS` и `DIARIZATION_MAX_SPEAKERS` имеют дефолты `1`, `2`, `4`. `requirements-diarization.txt` оставлен только для старых инструкций.
+
+Для качества diarization важно: faster-whisper запускается с `word_timestamps=True`, поэтому при включенной diarization длинный ASR-сегмент может быть разрезан на несколько реплик по словам и голосовым интервалам pyannote. Старый режим "один speaker label на весь ASR-сегмент по максимальному overlap" оставлен только как fallback, если word timestamps недоступны.
 
 `pyannote/speaker-diarization-3.1` может требовать Hugging Face token и принятие условий модели на Hugging Face. Если diarization выключена или модель недоступна, задача продолжает работать со старой локальной текстовой разметкой спикеров.
 
@@ -183,6 +197,8 @@ $env:TEXT_POLISH_PROVIDER="local"
 $env:DIARIZATION_ENABLED="0"
 python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000
 ```
+
+`DIARIZATION_ENABLED=0` is an emergency degraded mode without acoustic speaker separation. Do not use it for normal meeting transcription quality.
 
 ## Тесты
 

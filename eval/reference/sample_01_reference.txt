@@ -1,0 +1,11 @@
+# Human reference required
+
+REFERENCE_STATUS: TODO_HUMAN
+
+Paste a verbatim human transcript for `eval/audio/sample_01.m4a` here.
+
+Rules:
+- Preserve the actual words, including filler words if they affect meaning.
+- Keep domain terms exactly as spoken or intended: EADR, ADR, IDR, RFC, Jira, AirPoint, GSM, QA, CM, TMH.
+- Do not "improve" wording into a clean summary. This file is the ground truth for WER/CER.
+- Use speaker labels only if they are part of the spoken text. Speaker timeline belongs in `sample_01_speakers.json`.
