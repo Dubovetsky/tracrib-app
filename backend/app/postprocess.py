@@ -13,6 +13,46 @@ _SELF_INTRO_RE = re.compile(
     re.IGNORECASE,
 )
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?…])\s+(?=[A-ZА-ЯЁ0-9\"«])")
+_INVALID_EXPLICIT_SPEAKER_NAMES = {
+    "\u0430",
+    "\u0431\u0435\u0437",
+    "\u0432",
+    "\u0432\u043e",
+    "\u0434\u0430",
+    "\u0434\u043b\u044f",
+    "\u0434\u043e",
+    "\u0435\u0441\u043b\u0438",
+    "\u0438\u0437",
+    "\u043a",
+    "\u043a\u0430\u043a",
+    "\u043a\u0430\u043a\u0430\u044f",
+    "\u043a\u0430\u043a\u0438\u0435",
+    "\u043a\u0430\u043a\u043e\u0439",
+    "\u043a\u043e\u0433\u0434\u0430",
+    "\u043a\u0442\u043e",
+    "\u043d\u0430",
+    "\u043d\u043e",
+    "\u043e",
+    "\u043e\u0442",
+    "\u043f\u043e",
+    "\u043f\u043e\u0434",
+    "\u043f\u0440\u0438",
+    "\u043f\u0440\u043e",
+    "\u0441",
+    "\u0441\u043e",
+    "\u0442\u043e",
+    "\u0447\u0442\u043e",
+    "\u044d\u0442\u043e",
+    "adr",
+    "api",
+    "edr",
+    "idr",
+    "it",
+    "pmi",
+    "\u0430\u0440\u0431\u0438\u0442\u0440",
+    "\u0447\u0435\u043d\u044c",
+    "\u0447\u0435\u043d\u044c-\u0447\u0435\u043d\u044c-\u0447\u0435\u043d\u044c",
+}
 _SPACE_RE = re.compile(r"\s+")
 _DOTTED_EN_ABBREVIATION_RE = re.compile(r"\b(?:[A-Za-z]\.\s*){2,}")
 _TRAILING_ARTIFACT_RE = re.compile(
@@ -284,6 +324,8 @@ def assign_speakers(segments: list[TranscriptSegment]) -> list[TranscriptSegment
             "text": text,
             "speaker": current_speaker,
         }
+        if segment.get("raw_speaker"):
+            processed_segment["raw_speaker"] = segment["raw_speaker"]
         processed.append(processed_segment)
         previous = processed_segment
 
@@ -380,7 +422,19 @@ def extract_explicit_speaker(text: str) -> tuple[str | None, str]:
     if not match:
         return None, text
     name = normalize_name(match.group("name"))
+    if not is_plausible_explicit_speaker_name(name):
+        return None, text
     return name, normalize_spaces(match.group("text"))
+
+
+def is_plausible_explicit_speaker_name(name: str) -> bool:
+    normalized = normalize_spaces(name).lower()
+    if normalized in _INVALID_EXPLICIT_SPEAKER_NAMES:
+        return False
+    if normalized.upper() in _SPOKEN_IT_AGILE_ABBREVIATIONS:
+        return False
+    parts = normalized.split()
+    return not any(part in _INVALID_EXPLICIT_SPEAKER_NAMES for part in parts)
 
 
 def extract_self_intro_name(text: str) -> str | None:

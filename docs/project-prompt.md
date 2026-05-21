@@ -3,6 +3,11 @@
 ## Current ASR stabilization rule
 
 - faster-whisper should run with `word_timestamps=True`, `condition_on_previous_text=False`, and domain hints via `WHISPER_INITIAL_PROMPT` / `WHISPER_HOTWORDS`.
+- Completed jobs must expose operability metadata through the API: `diarization_status`, `speaker_count`, `warnings`, and phase `timings` for preprocess, ASR, diarization, text polish, export, and total job time where available.
+- Diarization failures are allowed to fall back, but they must be visible as warnings and `diarization_status=failed`; a successful-looking transcript with hidden diarization failure is a production defect.
+- Text-only speaker extraction must reject obvious garbage labels such as `По:`, `Кто:`, `Какая:`, `Как:`, `Из:`, and `Pmi:`. These strings must stay in transcript text, not become speaker identities.
+- Upload flow should accept per-job expected speaker count. If the user knows there are 3 speakers, backend must pass `num_speakers=3` to pyannote instead of relying on automatic clustering with only min/max bounds.
+- Backend quality gates include an HTTP smoke test for upload, polling job completion, result fetch, and TXT/SRT/VTT downloads using a fake ASR path.
 - Default hints include project terms that ASR previously confused: `EADR`, `ADR`, `IDR`, `DR`, `RFC`, `Jira`, `AirPoint`, `GSM`, `CM`, `TMH`, `QA`, and common IT/Agile abbreviations.
 - Diarization must prefer word-level splitting when ASR words are available: a single Whisper segment can become multiple transcript segments if pyannote detects speaker changes inside it.
 - Diarization is the default quality path, not an optional nice-to-have: `DIARIZATION_ENABLED` defaults to `1`, `DIARIZATION_MIN_SPEAKERS` defaults to `2`, and `DIARIZATION_MAX_SPEAKERS` defaults to `4`.

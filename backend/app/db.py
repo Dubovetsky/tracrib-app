@@ -6,6 +6,19 @@ from pathlib import Path
 from typing import Any
 
 
+OPTIONAL_JOB_COLUMNS = {
+    "expected_speaker_count": "INTEGER",
+    "diarization_status": "TEXT",
+    "raw_speaker_count": "INTEGER",
+    "speaker_count": "INTEGER",
+    "warnings_json": "TEXT",
+    "timings_json": "TEXT",
+    "diarization_turns_path": "TEXT",
+    "segments_json_path": "TEXT",
+    "diagnostics_json_path": "TEXT",
+}
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -43,6 +56,12 @@ class Database:
                 )
                 """
             )
+            existing_columns = {
+                row["name"] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()
+            }
+            for column, column_type in OPTIONAL_JOB_COLUMNS.items():
+                if column not in existing_columns:
+                    conn.execute(f"ALTER TABLE jobs ADD COLUMN {column} {column_type}")
             conn.commit()
 
     def create_job(self, job: dict[str, Any]) -> None:
@@ -53,6 +72,7 @@ class Database:
             "stored_audio_path": job["stored_audio_path"],
             "status": job.get("status", "queued"),
             "language": job.get("language", "ru"),
+            "expected_speaker_count": job.get("expected_speaker_count"),
             "created_at": now,
             "updated_at": now,
         }
@@ -61,11 +81,11 @@ class Database:
                 """
                 INSERT INTO jobs (
                     id, original_filename, stored_audio_path, status,
-                    language, created_at, updated_at
+                    language, expected_speaker_count, created_at, updated_at
                 )
                 VALUES (
                     :id, :original_filename, :stored_audio_path, :status,
-                    :language, :created_at, :updated_at
+                    :language, :expected_speaker_count, :created_at, :updated_at
                 )
                 """,
                 payload,

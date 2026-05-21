@@ -117,6 +117,77 @@ def test_faster_whisper_uses_quality_hints_and_word_timestamps(monkeypatch):
     assert segments[0]["text"] == "EADR"
 
 
+def test_faster_whisper_reports_diarization_failure(monkeypatch):
+    class FakeWhisperModel:
+        def __init__(self, model_name: str, device: str, compute_type: str) -> None:
+            pass
+
+        def transcribe(self, audio_path: str, **kwargs):
+            return [SimpleNamespace(start=0.0, end=1.0, text="РўРµСЃС‚")], None
+
+    class BrokenDiarization:
+        def diarize(self, audio_path: Path, expected_speakers: int | None = None):
+            raise RuntimeError("pyannote unavailable")
+
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "faster_whisper",
+        SimpleNamespace(WhisperModel=FakeWhisperModel),
+    )
+
+    engine = FasterWhisperEngine(
+        model_name="test-model",
+        device="cuda",
+        compute_type="float16",
+        fallback_compute_type="int8_float16",
+        diarization_engine=BrokenDiarization(),
+    )
+
+    result = engine.transcribe(Path("input.wav"))
+
+    assert result.diarization_status == "failed"
+    assert result.speaker_count >= 1
+    assert any("Diarization failed" in warning for warning in result.warnings)
+    assert "asr_seconds" in result.timings
+    assert "diarization_seconds" in result.timings
+
+
+def test_faster_whisper_passes_expected_speaker_count_to_diarization(monkeypatch):
+    captured_expected_speakers = None
+
+    class FakeWhisperModel:
+        def __init__(self, model_name: str, device: str, compute_type: str) -> None:
+            pass
+
+        def transcribe(self, audio_path: str, **kwargs):
+            word = SimpleNamespace(start=0.0, end=0.5, word="РўРµСЃС‚")
+            return [SimpleNamespace(start=0.0, end=1.0, text="РўРµСЃС‚", words=[word])], None
+
+    class CapturingDiarization:
+        def diarize(self, audio_path: Path, expected_speakers: int | None = None):
+            nonlocal captured_expected_speakers
+            captured_expected_speakers = expected_speakers
+            return []
+
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "faster_whisper",
+        SimpleNamespace(WhisperModel=FakeWhisperModel),
+    )
+
+    engine = FasterWhisperEngine(
+        model_name="test-model",
+        device="cuda",
+        compute_type="float16",
+        fallback_compute_type="int8_float16",
+        diarization_engine=CapturingDiarization(),
+    )
+
+    engine.transcribe(Path("input.wav"), expected_speakers=3)
+
+    assert captured_expected_speakers == 3
+
+
 def test_remove_dead_local_proxy_keeps_real_proxy(monkeypatch):
     monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:9")
     monkeypatch.setenv("HTTP_PROXY", "http://proxy.example:8080")

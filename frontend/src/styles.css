@@ -127,6 +127,25 @@ textarea {
   margin: 0;
 }
 
+.number-field {
+  display: grid;
+  gap: 6px;
+}
+
+.number-field span {
+  color: #4f5c63;
+  font-size: 13px;
+}
+
+.number-field input {
+  border: 1px solid #d3ddd8;
+  border-radius: 7px;
+  color: #233038;
+  min-height: 38px;
+  padding: 0 10px;
+  width: 100%;
+}
+
 .history-panel {
   min-height: 540px;
   padding: 16px;
@@ -211,6 +230,29 @@ textarea {
 .empty {
   color: #65747b;
   margin: 6px 0 0;
+}
+
+.diagnostics {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.diagnostics span {
+  background: #f0f4f2;
+  border: 1px solid #dbe5e0;
+  border-radius: 999px;
+  color: #334148;
+  font-size: 12px;
+  line-height: 1.2;
+  padding: 5px 9px;
+}
+
+.diagnostics .warning {
+  background: #fff4d6;
+  border-color: #ead18d;
+  color: #7b5512;
 }
 
 .download-group {

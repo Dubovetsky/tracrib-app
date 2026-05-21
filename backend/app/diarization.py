@@ -13,6 +13,7 @@ class DiarizationConfig:
     enabled: bool = False
     model_name: str = "pyannote/speaker-diarization-3.1"
     device: str = "cuda"
+    num_speakers: int | None = None
     min_speakers: int | None = None
     max_speakers: int | None = None
     auth_token: str | None = None
@@ -26,7 +27,7 @@ class SpeakerTurn:
 
 
 class DiarizationEngine(Protocol):
-    def diarize(self, audio_path: Path) -> list[SpeakerTurn]:
+    def diarize(self, audio_path: Path, expected_speakers: int | None = None) -> list[SpeakerTurn]:
         ...
 
 
@@ -64,25 +65,58 @@ class PyannoteDiarizationEngine:
         self._pipeline = pipeline
         return pipeline
 
-    def diarize(self, audio_path: Path) -> list[SpeakerTurn]:
+    def diarize(self, audio_path: Path, expected_speakers: int | None = None) -> list[SpeakerTurn]:
         pipeline = self._load_pipeline()
         kwargs: dict[str, int] = {}
-        if self.config.min_speakers is not None:
+        num_speakers = expected_speakers or self.config.num_speakers
+        if num_speakers is not None:
+            kwargs["num_speakers"] = num_speakers
+        elif self.config.min_speakers is not None:
             kwargs["min_speakers"] = self.config.min_speakers
-        if self.config.max_speakers is not None:
+        if num_speakers is None and self.config.max_speakers is not None:
             kwargs["max_speakers"] = self.config.max_speakers
 
-        diarization = pipeline(load_audio_for_pyannote(audio_path), **kwargs)
+        diarization = annotation_from_pyannote_output(
+            pipeline(load_audio_for_pyannote(audio_path), **kwargs)
+        )
         turns: list[SpeakerTurn] = []
         for turn, _, speaker in diarization.itertracks(yield_label=True):
             turns.append(SpeakerTurn(float(turn.start), float(turn.end), str(speaker)))
         return turns
 
 
-def load_audio_for_pyannote(audio_path: Path) -> dict[str, object]:
-    import torchaudio
+def annotation_from_pyannote_output(output: object) -> object:
+    """Return the annotation object from pyannote's current or legacy pipeline output."""
+    exclusive = getattr(output, "exclusive_speaker_diarization", None)
+    if exclusive is not None:
+        return exclusive
+    speaker_diarization = getattr(output, "speaker_diarization", None)
+    if speaker_diarization is not None:
+        return speaker_diarization
+    return output
 
-    waveform, sample_rate = torchaudio.load(str(audio_path))
+
+def load_audio_for_pyannote(audio_path: Path) -> dict[str, object]:
+    resolved_path = audio_path.resolve()
+    try:
+        import scipy.io.wavfile
+        import torch
+
+        sample_rate, samples = scipy.io.wavfile.read(str(resolved_path))
+        tensor = torch.as_tensor(samples)
+        if tensor.ndim == 1:
+            tensor = tensor.unsqueeze(0)
+        else:
+            tensor = tensor.transpose(0, 1)
+        if not tensor.is_floating_point():
+            tensor = tensor.float()
+            max_value = float(2 ** 15 if samples.dtype.itemsize <= 2 else 2 ** 31)
+            tensor = tensor / max_value
+        return {"waveform": tensor, "sample_rate": int(sample_rate)}
+    except Exception:
+        import torchaudio
+
+        waveform, sample_rate = torchaudio.load(str(resolved_path))
     return {"waveform": waveform, "sample_rate": sample_rate}
 
 
@@ -111,7 +145,7 @@ def apply_diarization(
             continue
 
         speaker = speaker_labels.setdefault(raw_speaker, f"Спикер {len(speaker_labels) + 1}")
-        processed.append({**segment, "speaker": speaker})
+        processed.append({**segment, "speaker": speaker, "raw_speaker": raw_speaker})
 
     return processed
 
@@ -123,6 +157,7 @@ def split_segment_by_diarized_words(
 ) -> list[TranscriptSegment]:
     pieces: list[TranscriptSegment] = []
     current_speaker = ""
+    current_raw_speaker = ""
     current_words: list[TranscriptWord] = []
 
     for word in segment.get("words", []):
@@ -133,18 +168,23 @@ def split_segment_by_diarized_words(
             else ""
         )
         if current_words and speaker != current_speaker:
-            pieces.append(build_segment_piece(current_words, current_speaker))
+            pieces.append(build_segment_piece(current_words, current_speaker, current_raw_speaker))
             current_words = []
         current_speaker = speaker
+        current_raw_speaker = raw_speaker or ""
         current_words.append(word)
 
     if current_words:
-        pieces.append(build_segment_piece(current_words, current_speaker))
+        pieces.append(build_segment_piece(current_words, current_speaker, current_raw_speaker))
 
     return pieces or [segment]
 
 
-def build_segment_piece(words: list[TranscriptWord], speaker: str) -> TranscriptSegment:
+def build_segment_piece(
+    words: list[TranscriptWord],
+    speaker: str,
+    raw_speaker: str = "",
+) -> TranscriptSegment:
     text = " ".join(word["word"].strip() for word in words if word["word"].strip()).strip()
     piece: TranscriptSegment = {
         "start": words[0]["start"],
@@ -153,7 +193,20 @@ def build_segment_piece(words: list[TranscriptWord], speaker: str) -> Transcript
     }
     if speaker:
         piece["speaker"] = speaker
+    if raw_speaker:
+        piece["raw_speaker"] = raw_speaker
     return piece
+
+
+def serialize_turns(turns: Iterable[SpeakerTurn]) -> list[dict[str, float | str]]:
+    return [
+        {"start": turn.start, "end": turn.end, "speaker": turn.speaker}
+        for turn in turns
+    ]
+
+
+def count_turn_speakers(turns: Iterable[SpeakerTurn]) -> int:
+    return len({turn.speaker for turn in turns})
 
 
 def best_speaker_for_word(word: TranscriptWord, turns: Iterable[SpeakerTurn]) -> str | None:

@@ -15,6 +15,7 @@ class TranscriptSegment(TypedDict):
     end: float
     text: str
     speaker: NotRequired[str]
+    raw_speaker: NotRequired[str]
     words: NotRequired[list[TranscriptWord]]
 
 

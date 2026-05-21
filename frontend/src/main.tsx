@@ -12,6 +12,15 @@ type Job = {
   original_filename: string;
   status: JobStatus;
   error: string | null;
+  expected_speaker_count: number | null;
+  diarization_status: string | null;
+  raw_speaker_count: number | null;
+  speaker_count: number | null;
+  warnings?: string[];
+  timings?: Record<string, number>;
+  diagnostics_json_path?: string | null;
+  diarization_turns_path?: string | null;
+  segments_json_path?: string | null;
   created_at: string;
   updated_at: string;
   started_at: string | null;
@@ -22,6 +31,7 @@ function App() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [expectedSpeakers, setExpectedSpeakers] = useState("3");
   const [result, setResult] = useState("");
   const [isUploading, setIsUploading] = useState(false);
   const [message, setMessage] = useState("");
@@ -57,6 +67,10 @@ function App() {
     try {
       const formData = new FormData();
       formData.append("file", selectedFile);
+      const parsedExpectedSpeakers = Number.parseInt(expectedSpeakers, 10);
+      if (Number.isInteger(parsedExpectedSpeakers) && parsedExpectedSpeakers > 0) {
+        formData.append("expected_speakers", String(parsedExpectedSpeakers));
+      }
       const response = await fetch(`${API_BASE}/api/upload`, {
         method: "POST",
         body: formData,
@@ -120,6 +134,17 @@ function App() {
             <Upload size={18} />
             {isUploading ? "Загрузка..." : "Загрузить"}
           </button>
+          <label className="number-field">
+            <span>Ожидаемое число спикеров</span>
+            <input
+              type="number"
+              min="1"
+              max="12"
+              step="1"
+              value={expectedSpeakers}
+              onChange={(event) => setExpectedSpeakers(event.target.value)}
+            />
+          </label>
           {message && <p className="message">{message}</p>}
         </form>
 
@@ -154,9 +179,11 @@ function App() {
                     <DownloadLink jobId={selectedJob.id} format="txt" />
                     <DownloadLink jobId={selectedJob.id} format="srt" />
                     <DownloadLink jobId={selectedJob.id} format="vtt" />
+                    <DownloadLink jobId={selectedJob.id} format="diagnostics" label="JSON" />
                   </div>
                 )}
               </div>
+              {selectedJob.status === "completed" && <JobDiagnostics job={selectedJob} />}
               {selectedJob.status === "failed" && <pre className="error-box">{selectedJob.error}</pre>}
               {selectedJob.status === "completed" ? (
                 <textarea className="transcript" value={result} readOnly />
@@ -176,13 +203,44 @@ function App() {
   );
 }
 
-function DownloadLink({ jobId, format }: { jobId: string; format: "txt" | "srt" | "vtt" }) {
+function JobDiagnostics({ job }: { job: Job }) {
+  const warnings = job.warnings ?? [];
+  const timings = job.timings ?? {};
+  return (
+    <div className="diagnostics">
+      <span>Diarization: {job.diarization_status ?? "unknown"}</span>
+      <span>Expected: {job.expected_speaker_count ?? "auto"}</span>
+      <span>Acoustic: {job.raw_speaker_count ?? "unknown"}</span>
+      <span>Final labels: {job.speaker_count ?? "unknown"}</span>
+      {formatTiming(timings.total_job_seconds) && <span>Total: {formatTiming(timings.total_job_seconds)}</span>}
+      {formatTiming(timings.asr_seconds) && <span>ASR: {formatTiming(timings.asr_seconds)}</span>}
+      {formatTiming(timings.diarization_seconds) && <span>Diarization: {formatTiming(timings.diarization_seconds)}</span>}
+      {warnings.length > 0 && <span className="warning">Warnings: {warnings.length}</span>}
+    </div>
+  );
+}
+
+function DownloadLink({
+  jobId,
+  format,
+  label,
+}: {
+  jobId: string;
+  format: "txt" | "srt" | "vtt" | "diagnostics";
+  label?: string;
+}) {
   return (
     <a className="download-link" href={`${API_BASE}/api/jobs/${jobId}/download/${format}`}>
       <Download size={15} />
-      {format.toUpperCase()}
+      {label ?? format.toUpperCase()}
     </a>
   );
+}
+
+function formatTiming(value: number | undefined) {
+  if (value === undefined) return "";
+  if (value < 60) return `${value.toFixed(1)}s`;
+  return `${Math.floor(value / 60)}m ${Math.round(value % 60)}s`;
 }
 
 function statusLabel(status: JobStatus) {

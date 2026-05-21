@@ -35,6 +35,7 @@ class Settings:
     diarization_enabled: bool = os.getenv("DIARIZATION_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
     diarization_model: str = os.getenv("DIARIZATION_MODEL", "pyannote/speaker-diarization-3.1")
     diarization_device: str = os.getenv("DIARIZATION_DEVICE", os.getenv("WHISPER_DEVICE", "cuda"))
+    diarization_num_speakers: int | None = optional_int_from_env("DIARIZATION_NUM_SPEAKERS")
     diarization_min_speakers: int | None = optional_int_from_env("DIARIZATION_MIN_SPEAKERS", 2)
     diarization_max_speakers: int | None = optional_int_from_env("DIARIZATION_MAX_SPEAKERS", 4)
     diarization_auth_token: str | None = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_TOKEN")

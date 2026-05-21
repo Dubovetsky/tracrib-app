@@ -1,5 +1,45 @@
 # Chat History
 
+## Session 10: backend stabilization, ASR operability metadata, and speaker-label guardrails
+
+Date: 2026-05-21
+
+Request: stabilize the backend and improve ASR quality using `docs/project-prompt.md`, `docs/chat-history.md`, and the previous evaluation findings. Main production risk: bad speaker structure can look confident, especially when text postprocessing turns garbage prefixes into speaker labels.
+
+Changes:
+
+- Added SQLite job metadata columns with migration-on-start: `diarization_status`, `speaker_count`, `warnings_json`, and `timings_json`.
+- `FasterWhisperEngine.transcribe()` now returns `TranscriptionResult` with text, segments, diarization status, speaker count, warnings, and timings while preserving old tuple unpack compatibility.
+- Job processing now records timings for preprocess, ASR, diarization, text polish, export, and total job time where available.
+- Job API responses now expose parsed `warnings` and `timings` instead of hiding JSON strings.
+- UI now shows compact diagnostics for completed jobs: diarization status, speaker count, total time, ASR time, diarization time, and warning count.
+- Upload flow now accepts an expected speaker count. For a known 3-speaker recording, the backend passes `num_speakers=3` into pyannote rather than relying on auto-detection between min/max bounds.
+- Text-only speaker extraction now rejects obvious garbage labels such as `По:`, `Кто:`, and `Pmi:` so they remain transcript text instead of becoming false speaker names.
+- Added an HTTP smoke test covering upload, polling completion, `/result`, and TXT/SRT/VTT downloads with fake ASR/preprocess.
+- Added regression coverage for diarization failure visibility and persisted operability metadata.
+
+Checks:
+
+```powershell
+python -m py_compile backend\app\db.py backend\app\services.py backend\app\transcriber.py backend\app\postprocess.py
+python -m pytest tests -p no:cacheprovider --basetemp=backend\data\pytest-tmp-full-stabilize3
+npm.cmd run build
+```
+
+Result:
+
+```text
+py_compile passed
+40 passed
+frontend build passed
+```
+
+Known limitations:
+
+- Full pytest still needs to run outside the Codex sandbox on this Windows host because pytest temp/cache cleanup can hit `PermissionError: [WinError 5]`.
+- The test run emits FastAPI `on_event` deprecation warnings; migrate to lifespan handlers in a later infra cleanup.
+- These changes improve honesty and operability of ASR/diarization results, but WER/CER still require human reference transcripts.
+
 ## Сессия 9: стабилизация ASR и diarization mapping
 
 Дата: 2026-05-20

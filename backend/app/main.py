@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse
 
@@ -42,8 +42,13 @@ def list_jobs() -> list[dict]:
 
 
 @app.post("/api/upload", status_code=201)
-async def upload_audio(file: UploadFile = File(...)) -> dict:
-    return await service.create_upload_job(file)
+async def upload_audio(
+    file: UploadFile = File(...),
+    expected_speakers: int | None = Form(default=None),
+) -> dict:
+    if expected_speakers is not None and not 1 <= expected_speakers <= 12:
+        raise HTTPException(status_code=422, detail="expected_speakers must be between 1 and 12")
+    return await service.create_upload_job(file, expected_speakers=expected_speakers)
 
 
 @app.get("/api/jobs/{job_id}")
@@ -74,6 +79,21 @@ def download_srt(job_id: str) -> FileResponse:
 @app.get("/api/jobs/{job_id}/download/vtt")
 def download_vtt(job_id: str) -> FileResponse:
     return download_result(job_id, "vtt_path", "transcript.vtt", "text/vtt")
+
+
+@app.get("/api/jobs/{job_id}/download/diagnostics")
+def download_diagnostics(job_id: str) -> FileResponse:
+    return download_result(job_id, "diagnostics_json_path", "diagnostics.json", "application/json")
+
+
+@app.get("/api/jobs/{job_id}/download/diarization-turns")
+def download_diarization_turns(job_id: str) -> FileResponse:
+    return download_result(job_id, "diarization_turns_path", "diarization_turns.json", "application/json")
+
+
+@app.get("/api/jobs/{job_id}/download/segments")
+def download_segments(job_id: str) -> FileResponse:
+    return download_result(job_id, "segments_json_path", "segments.json", "application/json")
 
 
 def get_completed_job(job_id: str) -> dict:
