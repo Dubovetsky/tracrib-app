@@ -54,6 +54,10 @@ def test_database_persists_operability_metadata(tmp_path):
             "original_filename": "audio.m4a",
             "stored_audio_path": str(tmp_path / "audio.m4a"),
             "expected_speaker_count": 3,
+            "asr_quality": "accurate",
+            "audio_profile": "speech",
+            "participant_names": "Наталья, Антон",
+            "custom_vocabulary": "EADR, Jira",
         }
     )
     db.update_job(
@@ -70,6 +74,10 @@ def test_database_persists_operability_metadata(tmp_path):
 
     assert job["diarization_status"] == "succeeded"
     assert job["expected_speaker_count"] == 3
+    assert job["asr_quality"] == "accurate"
+    assert job["audio_profile"] == "speech"
+    assert job["participant_names"] == "Наталья, Антон"
+    assert job["custom_vocabulary"] == "EADR, Jira"
     assert job["raw_speaker_count"] == 3
     assert job["speaker_count"] == 2
     assert job["warnings_json"] == '["low confidence"]'

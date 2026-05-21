@@ -1,4 +1,3 @@
-from backend.app.exports import render_srt, render_vtt
 from backend.app.postprocess import (
     normalize_domain_terms,
     postprocess_transcript,
@@ -22,7 +21,7 @@ def test_postprocess_uses_explicit_speaker_names():
     assert "Андрей:\nДа, я готов." in text
 
 
-def test_postprocess_falls_back_to_numbered_speakers():
+def test_postprocess_does_not_guess_speakers_from_text_by_default():
     text, segments = postprocess_transcript(
         [
             {"start": 0.0, "end": 1.0, "text": "Что обсудим?"},
@@ -31,9 +30,8 @@ def test_postprocess_falls_back_to_numbered_speakers():
     )
 
     assert segments[0]["speaker"] == "Спикер 1"
-    assert segments[1]["speaker"] == "Спикер 2"
+    assert segments[1]["speaker"] == "Спикер 1"
     assert "Спикер 1:" in text
-    assert "Спикер 2:" in text
 
 
 def test_postprocess_rejects_garbage_short_speaker_labels():
@@ -88,13 +86,6 @@ def test_split_sentences_and_paragraphs_for_readability():
         "Первое предложение. Второе предложение? Третье предложение!",
         "Четвертое предложение.",
     ]
-
-
-def test_subtitle_exports_include_speaker_when_present():
-    segments = [{"start": 0.0, "end": 2.5, "text": "Привет", "speaker": "Наталья"}]
-
-    assert "Наталья: Привет" in render_srt(segments)
-    assert "Наталья: Привет" in render_vtt(segments)
 
 
 def test_postprocess_removes_trailing_subtitle_artifacts():

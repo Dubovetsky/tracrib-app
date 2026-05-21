@@ -2,21 +2,30 @@
 
 ## Current ASR stabilization rule
 
+- Default production transcription is verbatim-first: `PRESERVE_ASR_WORDS=1` and `TEXT_POLISH_PROVIDER=off`. LLM/local text polish must be explicitly enabled and treated as a separate cleaned artifact path; hidden rewriting of ASR words is a quality defect.
 - faster-whisper should run with `word_timestamps=True`, `condition_on_previous_text=False`, and domain hints via `WHISPER_INITIAL_PROMPT` / `WHISPER_HOTWORDS`.
 - Completed jobs must expose operability metadata through the API: `diarization_status`, `speaker_count`, `warnings`, and phase `timings` for preprocess, ASR, diarization, text polish, export, and total job time where available.
+- Completed jobs must preserve immutable raw ASR text before speaker assignment or postprocessing: `raw_asr.txt`. This is the first debugging target when the final transcript looks distorted.
 - Diarization failures are allowed to fall back, but they must be visible as warnings and `diarization_status=failed`; a successful-looking transcript with hidden diarization failure is a production defect.
 - Text-only speaker extraction must reject obvious garbage labels such as `По:`, `Кто:`, `Какая:`, `Как:`, `Из:`, and `Pmi:`. These strings must stay in transcript text, not become speaker identities.
 - Upload flow should accept per-job expected speaker count. If the user knows there are 3 speakers, backend must pass `num_speakers=3` to pyannote instead of relying on automatic clustering with only min/max bounds.
-- Backend quality gates include an HTTP smoke test for upload, polling job completion, result fetch, and TXT/SRT/VTT downloads using a fake ASR path.
+- Upload flow now treats `expected_speakers` as required for reliable diarization. Auto speaker count is not a production-quality default for meetings.
+- Upload flow accepts per-job participant names and custom vocabulary; these are appended to ASR prompt/hotwords instead of relying on one generic deployment glossary.
+- Upload flow accepts `asr_quality` (`fast`, `balanced`, `accurate`) and `audio_profile` (`plain`, `conservative`, `speech`). Accurate mode prefers full `large-v3`; if unavailable, backend falls back to the default model with an explicit warning.
+- Audio preprocessing has speech enhancement (`highpass`, `lowpass`, `loudnorm`) and records preprocess diagnostics in warnings.
+- Backend exposes `/api/diarization/readiness` with pyannote enabled/model/device, HF token presence, required gated models, cache dir, cache writability, and ready status.
+- Hugging Face cache is pinned under project data (`backend/data/huggingface`) to avoid broken user-profile cache/ACL behavior on Windows.
+- Backend quality gates include an HTTP smoke test for upload, polling job completion, result fetch, improved TXT download, and raw TXT download using a fake ASR path.
 - Default hints include project terms that ASR previously confused: `EADR`, `ADR`, `IDR`, `DR`, `RFC`, `Jira`, `AirPoint`, `GSM`, `CM`, `TMH`, `QA`, and common IT/Agile abbreviations.
 - Diarization must prefer word-level splitting when ASR words are available: a single Whisper segment can become multiple transcript segments if pyannote detects speaker changes inside it.
+- Diarization records a summary of speaker clusters, turns, unassigned words, and ASR segments containing speaker switches.
 - Diarization is the default quality path, not an optional nice-to-have: `DIARIZATION_ENABLED` defaults to `1`, `DIARIZATION_MIN_SPEAKERS` defaults to `2`, and `DIARIZATION_MAX_SPEAKERS` defaults to `4`.
 - `pyannote.audio` belongs to the main backend dependency set in `requirements.txt`; `requirements-diarization.txt` is kept only for backward compatibility with older notes.
 - pyannote diarization requires accepted Hugging Face access to both `pyannote/speaker-diarization-3.1` and gated dependency `pyannote/segmentation-3.0`.
 - Backend must remove dead local proxy env values such as `127.0.0.1:9` before Hugging Face calls.
 - Pyannote should receive preloaded audio via `torchaudio.load()` instead of relying on pyannote 4 / torchcodec file decoding on Windows.
 - Segment-level maximum overlap between ASR segment and speaker turn is only a fallback for cases without word timestamps.
-- Diarization failures must be logged and must not fail the transcription job; the service falls back to text-only speaker assignment.
+- Diarization failures must be logged and must not fail the transcription job; the service must not invent alternating speakers from text-only heuristics when acoustic diarization is unavailable.
 
 Ты — Senior Fullstack Developer, Solution Architect и Tech Lead.
 
@@ -56,7 +65,7 @@ https://github.com/Dubovetsky/tracrib-app
 - Storage: локальная папка `backend/data`
 - DB: SQLite
 - Audio preprocessing: ffmpeg
-- Export: TXT, SRT, VTT
+- Export: improved TXT plus separate raw ASR TXT
 - Очередь задач: простая in-process background queue
 
 ## Текущая структура
@@ -90,8 +99,7 @@ docs/
 - `GET /api/jobs/{job_id}`
 - `GET /api/jobs/{job_id}/result`
 - `GET /api/jobs/{job_id}/download/txt`
-- `GET /api/jobs/{job_id}/download/srt`
-- `GET /api/jobs/{job_id}/download/vtt`
+- `GET /api/jobs/{job_id}/download/raw-txt`
 - Сохранение оригинального файла локально.
 - ffmpeg preprocessing в mono 16 kHz WAV.
 - Background transcription job.
@@ -99,7 +107,7 @@ docs/
 - SQLite история задач.
 - Статусы `queued`, `processing`, `completed`, `failed`.
 - Сохранение ошибок обработки.
-- TXT/SRT/VTT export.
+- Improved TXT export and separate raw ASR TXT.
 - React UI: загрузка, история, polling статуса, просмотр результата, скачивание.
 - README с запуском на Windows 11.
 - Базовые тесты.
@@ -124,7 +132,7 @@ D:\tg\ADR_установочная_встреча_с_Натальным.m4a
 
 - ffmpeg preprocessing: около 2.57 сек.
 - faster-whisper transcription на CUDA: около 168 сек.
-- export TXT/SRT/VTT: около 0.02 сек.
+- export TXT/raw TXT: около 0.02 сек.
 - segments: 3488.
 - text chars: 59324.
 - Итоговый job: `real-7ff91379-6e1d-40ef-9d9e-9f84a5be6e27`.
@@ -325,7 +333,7 @@ python -m pip show nvidia-cublas-cu12 nvidia-cudnn-cu12
 
 ## Current transcript postprocessing behavior
 
-- После faster-whisper ASR применяется локальная постобработка в `backend/app/postprocess.py`.
+- После faster-whisper ASR применяется speaker/readability postprocessing в `backend/app/postprocess.py`, но production default сохраняет ASR-слова без нормализации доменных терминов (`PRESERVE_ASR_WORDS=1`).
 - Перед локальной постобработкой может применяться опциональный акустический diarization-слой в `backend/app/diarization.py`.
 - Diarization выключена по умолчанию и включается через `DIARIZATION_ENABLED=1`.
 - Diarization использует `pyannote.audio` как optional dependency из `requirements-diarization.txt`, модель по умолчанию `pyannote/speaker-diarization-3.1`, `DIARIZATION_DEVICE`, `DIARIZATION_MIN_SPEAKERS`, `DIARIZATION_MAX_SPEAKERS`, `HF_TOKEN`/`HUGGINGFACE_TOKEN`.
@@ -336,13 +344,13 @@ python -m pip show nvidia-cublas-cu12 nvidia-cudnn-cu12
 - Имена спикеров извлекаются из текстового контекста: явные метки вида `Имя: текст`, `Имя - текст`, `Имя — текст`, а также самопредставления вроде `меня зовут ...`.
 - Если имя не удалось надежно понять из текста, используется fallback `Спикер 1`, `Спикер 2`.
 - TXT теперь сохраняется как читаемые блоки по спикерам с абзацами.
-- SRT/VTT сохраняют префикс спикера в каждой реплике, если он был определен.
+- TXT сохраняет префикс спикера в каждой реплике, если он был определен акустической diarization или явной меткой в тексте.
 - Разбиение на предложения и абзацы выполняется локальными правилами для читаемости: до 3 предложений или примерно 520 символов на абзац.
 - Перед назначением спикеров из конца результата удаляются служебные подписи, не относящиеся к тексту: например `Субтитры сделал DimaTorzok`, `Subtitles by ...`, `captioning by ...`, `редактор субтитров ...`, а также типовые финальные артефакты вроде `Спасибо за просмотр` и `Продолжение следует`. Чистка применяется только к хвосту транскрипта, чтобы не удалять похожие слова из середины содержательного текста.
 - Постобработка нормализует частые англоязычные IT/Agile-аббревиатуры и их русские фонетические записи. Поддерживаются как written-формы (`api`, `ci/cd`, `json`, `okr`, `kpi`), так и spoken-формы, которые часто появляются после ASR: `эй пи ай` -> `API`, `ю ай` -> `UI`, `ю икс` -> `UX`, `эм ви пи` -> `MVP`, `си ай си ди` -> `CI/CD`, `ди о ди` -> `DoD`, `дабл ю ай пи` -> `WIP`, `эс кью эл` -> `SQL`, `джей сон` -> `JSON`, `эйч ти ти пи эс` -> `HTTPS`, `джей эс` -> `JS`, `ти эс` -> `TS`, `си эс эс` -> `CSS`, `эй ай` -> `AI`, `эл эл эм` -> `LLM`, `эн эл пи` -> `NLP`, `о си ар` -> `OCR`, `эй эс ар` -> `ASR`, `и ти эл` -> `ETL`, а также `SLA`, `SLO`, `SLI`, `CDN`, `VPN`, `SSH`, `TLS`, `PDF`, `CSV`, `XLSX`, `DOCX` и другие распространенные сокращения.
 - Разбиение на предложения защищает англоязычные сокращения с точками вроде `A. P. I.`, чтобы они не дробили текст на отдельные предложения.
 - После локальной постобработки может применяться опциональный text polish слой в `backend/app/text_polish.py`.
-- `TEXT_POLISH_PROVIDER=auto` пробует облачных провайдеров по приоритету: `openai`, `deepseek`, `qwen`, `grok`, `gigachat`, `yandexgpt`, `mistral`, `groq`, затем локальный fallback.
+- `TEXT_POLISH_PROVIDER=off` является default для точной стенограммы. `TEXT_POLISH_PROVIDER=auto` пробует облачных провайдеров по приоритету: `openai`, `deepseek`, `qwen`, `grok`, `gigachat`, `yandexgpt`, `mistral`, `groq`, затем локальный fallback.
 - Приоритет можно переопределить через `TEXT_POLISH_PROVIDERS`, например `deepseek,qwen,openai,yandexgpt`.
 - Поддержанные ключи окружения: `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, `QWEN_API_KEY`/`DASHSCOPE_API_KEY`, `GROK_API_KEY`/`XAI_API_KEY`, `GIGACHAT_ACCESS_TOKEN`/`GIGACHAT_API_KEY`, `YANDEXGPT_API_KEY`/`YANDEX_API_KEY` + `YANDEXGPT_FOLDER_ID`, `MISTRAL_API_KEY`, `GROQ_API_KEY`.
 - Для каждого провайдера можно переопределить модель и base URL через env вида `OPENAI_TEXT_POLISH_MODEL`, `DEEPSEEK_TEXT_POLISH_MODEL`, `QWEN_TEXT_POLISH_MODEL`, `GROK_TEXT_POLISH_MODEL`, `GIGACHAT_TEXT_POLISH_MODEL`, `YANDEXGPT_TEXT_POLISH_MODEL`, `*_BASE_URL`.

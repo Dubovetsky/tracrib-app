@@ -198,15 +198,37 @@ def build_segment_piece(
     return piece
 
 
-def serialize_turns(turns: Iterable[SpeakerTurn]) -> list[dict[str, float | str]]:
-    return [
-        {"start": turn.start, "end": turn.end, "speaker": turn.speaker}
-        for turn in turns
-    ]
-
-
 def count_turn_speakers(turns: Iterable[SpeakerTurn]) -> int:
     return len({turn.speaker for turn in turns})
+
+
+def summarize_diarization(
+    segments: Iterable[TranscriptSegment],
+    turns: Iterable[SpeakerTurn],
+) -> dict[str, int]:
+    turn_list = list(turns)
+    segments_with_switch = 0
+    unassigned_words = 0
+    assigned_words = 0
+    for segment in segments:
+        word_speakers = []
+        for word in segment.get("words", []):
+            speaker = best_speaker_for_word(word, turn_list)
+            if speaker:
+                assigned_words += 1
+                word_speakers.append(speaker)
+            else:
+                unassigned_words += 1
+        if len({speaker for speaker in word_speakers if speaker}) > 1:
+            segments_with_switch += 1
+
+    return {
+        "speaker_clusters": count_turn_speakers(turn_list),
+        "turns": len(turn_list),
+        "segments_with_speaker_switch": segments_with_switch,
+        "assigned_words": assigned_words,
+        "unassigned_words": unassigned_words,
+    }
 
 
 def best_speaker_for_word(word: TranscriptWord, turns: Iterable[SpeakerTurn]) -> str | None:

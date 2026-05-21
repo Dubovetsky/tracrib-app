@@ -50,6 +50,30 @@ def test_pyannote_diarization_prefers_exact_expected_speaker_count(monkeypatch):
     assert captured_kwargs == {"num_speakers": 3}
 
 
+def test_pyannote_diarization_auto_does_not_force_speaker_range(monkeypatch):
+    captured_kwargs = {}
+
+    class FakeAnnotation:
+        def itertracks(self, yield_label: bool = False):
+            return iter([])
+
+    class FakePipeline:
+        def __call__(self, audio, **kwargs):
+            captured_kwargs.update(kwargs)
+            return FakeAnnotation()
+
+    monkeypatch.setattr(PyannoteDiarizationEngine, "_load_pipeline", lambda self: FakePipeline())
+    monkeypatch.setattr(
+        "backend.app.diarization.load_audio_for_pyannote",
+        lambda audio_path: {"waveform": object(), "sample_rate": 16000},
+    )
+
+    engine = PyannoteDiarizationEngine(DiarizationConfig())
+    engine.diarize(__import__("pathlib").Path("sample.wav"))
+
+    assert captured_kwargs == {}
+
+
 def test_pyannote_diarization_reads_current_diarize_output_shape(monkeypatch):
     class FakeTurn:
         start = 1.0

@@ -1,5 +1,77 @@
 # Chat History
 
+## Session 12: remove subtitle/JSON exports and stop fake speaker alternation
+
+Date: 2026-05-21
+
+Request: remove SRT/VTT/JSON outputs, keep separate RAW, show improved text in the app and TXT download, and fix the main quality defect: speaker assignment looked random even when raw ASR words were acceptable.
+
+Changes:
+
+- Removed product SRT, VTT, JSON, raw-segments, diarization-turns, and diagnostics download endpoints from the current API surface.
+- Export now writes only `transcript.txt`; raw storage writes only `raw_asr.txt`.
+- Frontend completed-job actions now show only TXT and RAW.
+- Text-only postprocessing no longer alternates unknown speakers by question/answer heuristics by default. Without acoustic diarization or explicit safe speaker labels, it keeps one numbered speaker instead of inventing a speaker structure.
+- Updated tests and docs for the current product contract: improved TXT plus separate raw ASR TXT.
+
+Production note:
+
+- This fixes false confidence, not speaker diarization accuracy by itself. Correct "who said each word" still depends on working acoustic diarization with expected speaker count and word-level ASR timestamps.
+
+Follow-up:
+
+- Added production-quality upload controls: required `expected_speakers`, `asr_quality`, `audio_profile`, participant names, and custom vocabulary.
+- Added `/api/diarization/readiness` so missing HF token / cache problems are visible before a job is trusted.
+- Pinned Hugging Face cache to `backend/data/huggingface` and added a writable-cache check to avoid Windows user-profile ACL failures.
+- Added speech audio preprocessing profile with high-pass, low-pass, and loudness normalization, plus preprocess diagnostics in job warnings.
+- Accurate ASR mode now prefers full `large-v3`; if that model is unavailable, the backend falls back to the default model and records an explicit warning instead of silently failing.
+- Diarization now records a summary of acoustic speaker clusters, turn count, unassigned words, and speaker switches inside ASR segments.
+
+## Session 11: verbatim-first transcript accuracy and Windows pytest ACL fix
+
+Date: 2026-05-21
+
+Request: review the project as an ASR/diarization production engineer, fix backend/quality issues, and finally fix the Windows ACL pytest failure. User also clarified that recent output had strong text distortion and the priority is maximum accuracy: every spoken word should remain as close as possible to ASR output and be assigned to the correct speaker.
+
+Changes:
+
+- Added `pytest.ini` so `python -m pytest tests` ignores ACL-poisoned cache/temp directories under `tests/` and disables pytest cache provider by default.
+- Added root `conftest.py` with a project-local `tmp_path` fixture, avoiding broken Windows `%TEMP%` / pytest cache folders that caused `PermissionError: [WinError 5]`.
+- Fixed the API smoke fake transcriber signature to match the production transcriber contract with `expected_speakers`.
+- Changed production transcript defaults to verbatim-first: `PRESERVE_ASR_WORDS=1` and `TEXT_POLISH_PROVIDER=off`.
+- `FasterWhisperEngine` now passes `preserve_asr_words` into postprocessing, so the default backend path does not rewrite ASR words into normalized domain terms.
+- `postprocess_transcript(..., preserve_words=True)` still assigns speaker labels and can detect explicit speaker names, but it does not rewrite segment text or strip explicit labels from the displayed words.
+- Added a regression test proving verbatim output can preserve words such as spoken `эй пи ай` instead of silently normalizing them to `API`.
+- Updated README and project prompt to state that hidden LLM/local rewriting is a transcription quality defect unless explicitly enabled as a cleaned/polished path.
+
+Checks:
+
+```powershell
+python -m pytest tests
+npm.cmd run build
+```
+
+Result:
+
+```text
+45 passed
+frontend build passed
+```
+
+Known limitations:
+
+- This does not prove WER/CER or diarization accuracy on real audio; that still requires reference transcripts and speaker annotations.
+- FastAPI still emits `on_event` deprecation warnings; migrate to lifespan later.
+- For maximum speaker fidelity, users should provide expected speaker count before upload. Participant-name mapping should be a future explicit UI metadata field, not guessed from text.
+
+Follow-up in the same session:
+
+- Added immutable raw ASR artifacts for every completed job: `raw_asr.txt` and `raw_asr_segments.json`, written immediately after faster-whisper and before diarization/postprocessing.
+- Added backend download endpoints `/api/jobs/{job_id}/download/raw-txt` and `/api/jobs/{job_id}/download/raw-segments`.
+- Added RAW download in the frontend completed-job actions.
+- SQLite now migrates `raw_text_path` and `raw_segments_json_path`.
+- Smoke test now verifies raw TXT and raw segments downloads.
+
 ## Session 10: backend stabilization, ASR operability metadata, and speaker-label guardrails
 
 Date: 2026-05-21
@@ -870,4 +942,66 @@ Health check:
 
 ```text
 GET http://127.0.0.1:8000/api/health -> ok
+```
+
+## Сессия 9: stabilization ASR/diarization, UI cleanup, ETA и отмена обработки
+
+Дата: 2026-05-21
+
+Контекст:
+
+- Пользователь потребовал production-grade стабилизацию backend, ASR, diarization, raw/final transcript separation, observability, тесты и UI/UX без декоративных заглушек.
+- Критичные жалобы: raw download отдавал `Not Found`, speaker diarization выглядел случайным, LLM/словарь/имена могли загрязнять распознанный текст, ETA показывал нереалистичные значения, UI имел лишние пустые зоны и плохо читаемые блоки.
+- Отдельный blocker: pyannote требует рабочий HF token и принятый gated access к `pyannote/speaker-diarization-3.1` и `pyannote/segmentation-3.0`; token хранится локально в `backend/data/secrets/hf_token.txt` и не должен коммититься.
+
+Сделано:
+
+- Добавлено игнорирование `backend/data/secrets/`, чтобы HF token не утек в GitHub.
+- Backend получил readiness/diagnostics для diarization и HF cache, включая проверку writable cache и доступности pyannote pipeline.
+- Raw ASR сохранен как отдельный artifact `raw_asr.txt`; `/download/raw-txt` теперь умеет отдавать raw и fallback для legacy jobs.
+- Убраны ненужные пользователю export endpoints/files SRT/VTT/JSON из UI-потока; основной TXT остается финальным улучшенным текстом.
+- ASR modes приведены к пользовательским режимам: fast/balanced/accurate, в UI отображаются русские названия.
+- Audio profile убран из UI как ручная настройка; профиль выбирается автоматически по режиму ASR.
+- Добавлена оценка производительности по локальным completed jobs и baseline, чтобы ETA не схлопывался до “1 сек” в середине ASR/diarization.
+- Progress/ETA переведены на полный pipeline, а не на отдельный этап: audio preparation, ASR, diarization, text assembly, export.
+- Для ASR/diarization добавлены stage floors: ASR больше не считается концом всего процесса, diarization не показывает ложные секунды до завершения.
+- Убраны поля participants/custom vocabulary из UI, потому что они загрязняли текст и провоцировали вставку имен/терминов прямо в transcript.
+- LLM-полировка ограничена: нельзя менять порядок, смысл и слова; разрешены только speaker/name resolver и очевидная нормализация терминов.
+- Speaker count больше не обязателен в UI; pipeline допускает auto speaker count и до 20 speakers.
+- Diarization строится от акустики/pyannote, а LLM используется только как финальный resolver имен/терминов, не как “слуховая” переразметка разговора.
+- Добавлена защита от мусорных speaker labels и от повторного вбрасывания participant/custom vocabulary в текст.
+- UI переработан точечно:
+  - история получила scroll и delete button на каждой записи;
+  - колонки растянуты по высоте окна без ломания исходной компоновки;
+  - result textarea растянута вниз до доступной области;
+  - кнопки download под заголовком и статусом;
+  - статусы стали темно-красными для ошибки, зелеными для успеха, желтыми для обработки;
+  - статус выбранной job в левой колонке синхронизируется с выбранным элементом истории;
+  - блок помощи по режимам распознавания облегчен визуально;
+  - текущий статус под названием файла получил shimmer effect во время обработки;
+  - кнопка refresh оставлена, добавлен визуальный feedback.
+- Добавлена кнопка `Прервать` слева от refresh.
+- Backend получил `POST /api/jobs/{job_id}/cancel`.
+- В jobs добавлен `cancel_requested`; queued/processing job переводится в `failed/cancelled` с `Processing was cancelled by user.`
+- Worker проверяет отмену между фазами и в progress callback, чтобы отмененная job не могла потом silently стать `completed`.
+
+Важное ограничение:
+
+- Текущая отмена безопасная/cooperative. Она мгновенно меняет состояние job и останавливает pipeline на ближайшей проверке или границе фазы. Она не убивает принудительно CUDA/pyannote/faster-whisper внутри синхронного thread.
+- Для настоящего hard cancel посреди GPU/pyannote inference нужен следующий архитектурный шаг: запуск каждой job в отдельном subprocess/worker process и termination этого процесса.
+
+Проверки:
+
+```powershell
+python -m pytest tests/test_api_smoke.py
+npm run build
+```
+
+Результат:
+
+```text
+tests/test_api_smoke.py: 11 passed
+frontend build: passed
+backend restarted on 127.0.0.1:8000
+frontend running on 127.0.0.1:5173
 ```

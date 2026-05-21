@@ -1,6 +1,7 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.codex-pytest-runtime/
 tests/.pytest-tmp*/
 pytest-cache-files-*/
 .venv/
@@ -8,6 +9,7 @@ venv/
 .env
 
 backend/data/
+backend/data/secrets/
 logs/
 
 frontend/node_modules/

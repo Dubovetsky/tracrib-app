@@ -4,6 +4,8 @@
 
 - faster-whisper uses `word_timestamps=True`, `condition_on_previous_text=False`, `initial_prompt`, and `hotwords` to reduce long-context hallucinations and improve domain terms such as `EADR`, `ADR`, `IDR`, `RFC`, `Jira`, `AirPoint`, `GSM`, and `QA`.
 - With diarization enabled, word timestamps are used to split one ASR segment into multiple speaker turns when pyannote detects a speaker change inside that segment. Segment-level maximum overlap is now only a fallback when words are unavailable.
+- The raw transcript path is verbatim-first: `PRESERVE_ASR_WORDS=1`. The UI and TXT download show the improved transcript; use RAW when you need the untouched ASR words before speaker assignment and text polish.
+- Each completed job stores raw ASR text before diarization/postprocessing: `raw_asr.txt`. Use the RAW download in the UI to separate ASR model errors from speaker-assignment or formatting errors.
 - `WHISPER_INITIAL_PROMPT` and `WHISPER_HOTWORDS` can be overridden per deployment; keep them short and domain-specific.
 - pyannote diarization requires accepted Hugging Face access for both `pyannote/speaker-diarization-3.1` and its gated dependency `pyannote/segmentation-3.0`.
 
@@ -84,7 +86,8 @@ $env:WHISPER_COMPUTE_TYPE="float16"
 $env:WHISPER_FALLBACK_COMPUTE_TYPE="int8_float16"
 $env:WHISPER_INITIAL_PROMPT="Встреча на русском языке. Термины: EADR, ADR, IDR, RFC, Jira, AirPoint, GSM, QA."
 $env:WHISPER_HOTWORDS="EADR ADR IDR RFC Jira AirPoint GSM QA"
-$env:TEXT_POLISH_PROVIDER="local"
+$env:PRESERVE_ASR_WORDS="1"
+$env:TEXT_POLISH_PROVIDER="off"
 $env:DIARIZATION_ENABLED="1"
 $env:DIARIZATION_MIN_SPEAKERS="2"
 $env:DIARIZATION_MAX_SPEAKERS="4"
@@ -160,9 +163,8 @@ npm run dev
 - `GET /api/jobs` - история задач.
 - `GET /api/jobs/{job_id}` - статус задачи.
 - `GET /api/jobs/{job_id}/result` - текст результата.
-- `GET /api/jobs/{job_id}/download/txt` - скачать TXT.
-- `GET /api/jobs/{job_id}/download/srt` - скачать SRT.
-- `GET /api/jobs/{job_id}/download/vtt` - скачать VTT.
+- `GET /api/jobs/{job_id}/download/txt` - скачать улучшенный TXT.
+- `GET /api/jobs/{job_id}/download/raw-txt` - скачать чистый raw ASR TXT до post-processing.
 
 ## Обработка
 
@@ -184,7 +186,7 @@ npm run dev
 ffmpeg -version
 python -m pip show nvidia-cublas-cu12 nvidia-cudnn-cu12 faster-whisper ctranslate2
 python -m py_compile backend\app\audio.py backend\app\services.py backend\app\settings.py backend\app\transcriber.py
-python -m pytest tests\test_db.py tests\test_exports.py tests\test_postprocess.py tests\test_text_polish.py tests\test_diarization.py tests\test_transcriber_fallback.py -p no:cacheprovider --basetemp=backend\data\pytest-tmp-full
+python -m pytest tests
 Invoke-RestMethod -Uri http://127.0.0.1:8000/api/health
 ```
 
@@ -193,7 +195,8 @@ Invoke-RestMethod -Uri http://127.0.0.1:8000/api/health
 ```powershell
 $env:HF_HUB_OFFLINE="1"
 $env:HF_HUB_DISABLE_XET="1"
-$env:TEXT_POLISH_PROVIDER="local"
+$env:PRESERVE_ASR_WORDS="1"
+$env:TEXT_POLISH_PROVIDER="off"
 $env:DIARIZATION_ENABLED="0"
 python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000
 ```

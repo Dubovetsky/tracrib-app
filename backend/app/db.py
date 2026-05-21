@@ -8,6 +8,8 @@ from typing import Any
 
 OPTIONAL_JOB_COLUMNS = {
     "expected_speaker_count": "INTEGER",
+    "raw_text_path": "TEXT",
+    "raw_segments_json_path": "TEXT",
     "diarization_status": "TEXT",
     "raw_speaker_count": "INTEGER",
     "speaker_count": "INTEGER",
@@ -16,6 +18,16 @@ OPTIONAL_JOB_COLUMNS = {
     "diarization_turns_path": "TEXT",
     "segments_json_path": "TEXT",
     "diagnostics_json_path": "TEXT",
+    "asr_quality": "TEXT",
+    "audio_profile": "TEXT",
+    "participant_names": "TEXT",
+    "custom_vocabulary": "TEXT",
+    "source_duration_seconds": "REAL",
+    "estimated_total_seconds": "REAL",
+    "processing_stage": "TEXT",
+    "progress_percent": "REAL",
+    "progress_message": "TEXT",
+    "cancel_requested": "INTEGER DEFAULT 0",
 }
 
 
@@ -73,6 +85,16 @@ class Database:
             "status": job.get("status", "queued"),
             "language": job.get("language", "ru"),
             "expected_speaker_count": job.get("expected_speaker_count"),
+            "asr_quality": job.get("asr_quality"),
+            "audio_profile": job.get("audio_profile"),
+            "participant_names": job.get("participant_names"),
+            "custom_vocabulary": job.get("custom_vocabulary"),
+            "source_duration_seconds": job.get("source_duration_seconds"),
+            "estimated_total_seconds": job.get("estimated_total_seconds"),
+            "processing_stage": job.get("processing_stage"),
+            "progress_percent": job.get("progress_percent"),
+            "progress_message": job.get("progress_message"),
+            "cancel_requested": job.get("cancel_requested", 0),
             "created_at": now,
             "updated_at": now,
         }
@@ -81,11 +103,17 @@ class Database:
                 """
                 INSERT INTO jobs (
                     id, original_filename, stored_audio_path, status,
-                    language, expected_speaker_count, created_at, updated_at
+                    language, expected_speaker_count, asr_quality, audio_profile,
+                    participant_names, custom_vocabulary, source_duration_seconds,
+                    estimated_total_seconds, processing_stage, progress_percent,
+                    progress_message, cancel_requested, created_at, updated_at
                 )
                 VALUES (
                     :id, :original_filename, :stored_audio_path, :status,
-                    :language, :expected_speaker_count, :created_at, :updated_at
+                    :language, :expected_speaker_count, :asr_quality, :audio_profile,
+                    :participant_names, :custom_vocabulary, :source_duration_seconds,
+                    :estimated_total_seconds, :processing_stage, :progress_percent,
+                    :progress_message, :cancel_requested, :created_at, :updated_at
                 )
                 """,
                 payload,
@@ -106,6 +134,11 @@ class Database:
         with self.connect() as conn:
             row = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
         return dict(row) if row else None
+
+    def delete_job(self, job_id: str) -> None:
+        with self.connect() as conn:
+            conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+            conn.commit()
 
     def list_jobs(self, limit: int = 50) -> list[dict[str, Any]]:
         with self.connect() as conn:

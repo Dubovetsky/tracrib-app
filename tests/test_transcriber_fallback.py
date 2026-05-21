@@ -117,6 +117,87 @@ def test_faster_whisper_uses_quality_hints_and_word_timestamps(monkeypatch):
     assert segments[0]["text"] == "EADR"
 
 
+def test_participant_names_do_not_leak_into_asr_prompt_or_transcript(monkeypatch):
+    captured_kwargs = {}
+
+    class FakeWhisperModel:
+        def __init__(self, model_name: str, device: str, compute_type: str) -> None:
+            pass
+
+        def transcribe(self, audio_path: str, **kwargs):
+            captured_kwargs.update(kwargs)
+            return [
+                SimpleNamespace(start=0.0, end=1.0, text="Слава, Леонид, Карина. Слава, Леонид, Карина."),
+                SimpleNamespace(start=1.0, end=2.0, text="Кто ведет заметки?"),
+            ], None
+
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "faster_whisper",
+        SimpleNamespace(WhisperModel=FakeWhisperModel),
+    )
+
+    engine = FasterWhisperEngine(
+        model_name="test-model",
+        device="cuda",
+        compute_type="float16",
+        fallback_compute_type="int8_float16",
+        initial_prompt="Русская деловая встреча",
+        hotwords="ADR EADR Jira",
+    )
+
+    result = engine.transcribe(
+        Path("input.wav"),
+        participant_names="Слава, Леонид, Карина",
+        custom_vocabulary="SIEM, RPOINT, ADR, EADR",
+    )
+
+    assert "Слава" not in captured_kwargs["initial_prompt"]
+    assert "Леонид" not in captured_kwargs["hotwords"]
+    assert "SIEM" not in captured_kwargs["hotwords"]
+    assert result.raw_text == "Кто ведет заметки?"
+    assert "Слава, Леонид, Карина. Слава" not in result.text
+    assert any("prompt-echo segment removed" in warning for warning in result.warnings)
+
+
+def test_custom_vocabulary_echo_prefix_is_removed_without_dropping_real_text(monkeypatch):
+    class FakeWhisperModel:
+        def __init__(self, model_name: str, device: str, compute_type: str) -> None:
+            pass
+
+        def transcribe(self, audio_path: str, **kwargs):
+            return [
+                SimpleNamespace(
+                    start=0.0,
+                    end=3.0,
+                    text=(
+                        "SIEM, RPOINT, ADR, EADR. "
+                        "Условная команда сканера. На них это шифрование влияет номинально."
+                    ),
+                )
+            ], None
+
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "faster_whisper",
+        SimpleNamespace(WhisperModel=FakeWhisperModel),
+    )
+
+    engine = FasterWhisperEngine(
+        model_name="test-model",
+        device="cuda",
+        compute_type="float16",
+        fallback_compute_type="int8_float16",
+        hotwords="ADR EADR Jira",
+    )
+
+    result = engine.transcribe(Path("input.wav"), custom_vocabulary="SIEM, RPOINT, ADR, EADR")
+
+    assert result.raw_text == "Условная команда сканера. На них это шифрование влияет номинально."
+    assert result.text.startswith("Спикер 1:\nУсловная команда сканера.")
+    assert any("prompt-echo prefix removed" in warning for warning in result.warnings)
+
+
 def test_faster_whisper_reports_diarization_failure(monkeypatch):
     class FakeWhisperModel:
         def __init__(self, model_name: str, device: str, compute_type: str) -> None:
@@ -186,6 +267,40 @@ def test_faster_whisper_passes_expected_speaker_count_to_diarization(monkeypatch
     engine.transcribe(Path("input.wav"), expected_speakers=3)
 
     assert captured_expected_speakers == 3
+
+
+def test_accurate_asr_falls_back_to_default_model_when_large_model_unavailable(monkeypatch):
+    loaded_models: list[str] = []
+
+    class FakeWhisperModel:
+        def __init__(self, model_name: str, device: str, compute_type: str) -> None:
+            loaded_models.append(model_name)
+            if model_name == "large-v3":
+                raise RuntimeError("large model unavailable")
+
+        def transcribe(self, audio_path: str, **kwargs):
+            return [SimpleNamespace(start=0.0, end=1.0, text="fallback ok")], None
+
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "faster_whisper",
+        SimpleNamespace(WhisperModel=FakeWhisperModel),
+    )
+
+    engine = FasterWhisperEngine(
+        model_name="large-v3-turbo",
+        accurate_model_name="large-v3",
+        device="cuda",
+        compute_type="float16",
+        fallback_compute_type="int8_float16",
+    )
+
+    result = engine.transcribe(Path("input.wav"), asr_quality="accurate")
+
+    assert "large-v3" in loaded_models
+    assert "large-v3-turbo" in loaded_models
+    assert result.raw_text == "fallback ok"
+    assert any("Accurate ASR model unavailable" in warning for warning in result.warnings)
 
 
 def test_remove_dead_local_proxy_keeps_real_proxy(monkeypatch):
