@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 
 import backend.app.main as main_module
 import backend.app.services as services_module
-from backend.app.services import JobService, auto_audio_profile_for_quality
+from backend.app.services import JobService, auto_audio_profile_for_quality, select_pipeline_plan
 from backend.app.services import estimate_stage_remaining_floor
 from backend.app.settings import Settings
 from backend.app.transcriber import TranscriptionResult
@@ -24,9 +24,13 @@ class FakeTranscriber:
         custom_vocabulary: str = "",
         source_duration_seconds: object = None,
         progress_callback=None,
+        raw_asr_callback=None,
+        run_diarization: bool = True,
     ) -> TranscriptionResult:
         if progress_callback:
             progress_callback("asr", 50.0, "Распознаем речь")
+        if raw_asr_callback:
+            raw_asr_callback("Smoke transcript.", [{"start": 0.0, "end": 1.0, "text": "Smoke transcript."}])
         return TranscriptionResult(
             text="Smoke transcript.",
             segments=[{"start": 0.0, "end": 1.0, "text": "Smoke transcript.", "speaker": "Speaker 1"}],
@@ -40,7 +44,12 @@ class FakeTranscriber:
 
 
 def test_upload_poll_and_download_smoke(tmp_path, monkeypatch):
-    def fake_preprocess_audio(source_path: Path, wav_path: Path, profile: str = "speech") -> dict[str, object]:
+    def fake_preprocess_audio(
+        source_path: Path,
+        wav_path: Path,
+        profile: str = "speech",
+        timeout_seconds: float = 900.0,
+    ) -> dict[str, object]:
         wav_path.parent.mkdir(parents=True, exist_ok=True)
         wav_path.write_bytes(b"fake wav")
         return {"audio_profile": profile, "sample_rate": 16000, "channels": 1}
@@ -73,7 +82,7 @@ def test_upload_poll_and_download_smoke(tmp_path, monkeypatch):
         assert job["status"] == "completed"
         assert job["expected_speaker_count"] is None
         assert job["asr_quality"] == "balanced"
-        assert job["audio_profile"] == "speech"
+        assert job["audio_profile"] == "conservative"
         assert job["processing_stage"] == "completed"
         assert job["progress_percent"] == 100.0
         assert job["progress_message"] == "Готово"
@@ -122,6 +131,56 @@ def test_raw_download_falls_back_for_legacy_jobs(tmp_path, monkeypatch):
 
     assert raw_text_response.status_code == 200
     assert raw_text_response.text.replace("\r\n", "\n") == "Legacy transcript\n"
+
+
+def test_raw_download_is_available_before_job_completion(tmp_path, monkeypatch):
+    settings = Settings(data_dir=tmp_path, text_polish_provider="off", diarization_enabled=False)
+    service = JobService(settings)
+    raw_dir = tmp_path / "results" / "processing-job"
+    raw_dir.mkdir(parents=True)
+    raw_path = raw_dir / "raw_asr.txt"
+    raw_path.write_text("Early raw transcript\n", encoding="utf-8")
+    service.db.create_job(
+        {
+            "id": "processing-job",
+            "original_filename": "long.m4a",
+            "stored_audio_path": str(tmp_path / "long.m4a"),
+            "status": "processing",
+        }
+    )
+    service.db.update_job("processing-job", raw_text_path=str(raw_path))
+    monkeypatch.setattr(main_module, "service", service)
+
+    with TestClient(main_module.app) as client:
+        response = client.get("/api/jobs/processing-job/download/raw-txt")
+
+    assert response.status_code == 200
+    assert response.text.replace("\r\n", "\n") == "Early raw transcript\n"
+
+
+def test_job_logs_are_downloaded_per_file(tmp_path, monkeypatch):
+    settings = Settings(data_dir=tmp_path, text_polish_provider="off", diarization_enabled=False)
+    service = JobService(settings)
+    log_dir = tmp_path / "results" / "log-job"
+    log_dir.mkdir(parents=True)
+    log_path = log_dir / "job.log"
+    log_path.write_text("job-specific diagnostics\n", encoding="utf-8")
+    service.db.create_job(
+        {
+            "id": "log-job",
+            "original_filename": "log.m4a",
+            "stored_audio_path": str(tmp_path / "log.m4a"),
+            "status": "failed",
+            "job_log_path": str(log_path),
+        }
+    )
+    monkeypatch.setattr(main_module, "service", service)
+
+    with TestClient(main_module.app) as client:
+        response = client.get("/api/jobs/log-job/download/logs")
+
+    assert response.status_code == 200
+    assert response.text.replace("\r\n", "\n") == "job-specific diagnostics\n"
 
 
 def test_delete_job_removes_history_entry(tmp_path, monkeypatch):
@@ -225,8 +284,80 @@ def test_upload_allows_expected_speakers_up_to_twenty(tmp_path, monkeypatch):
 
 def test_audio_profile_is_automatic_by_asr_quality():
     assert auto_audio_profile_for_quality("accurate") == "speech"
-    assert auto_audio_profile_for_quality("balanced") == "speech"
+    assert auto_audio_profile_for_quality("balanced") == "conservative"
     assert auto_audio_profile_for_quality("fast") == "conservative"
+
+
+def test_only_accurate_quality_runs_full_diarization():
+    assert services_module.should_run_diarization_for_quality("fast") is False
+    assert services_module.should_run_diarization_for_quality("balanced") is False
+    assert services_module.should_run_diarization_for_quality("accurate") is True
+
+
+def test_pipeline_plan_separates_modes_without_mode_drift():
+    fast = select_pipeline_plan("fast")
+    balanced = select_pipeline_plan("balanced")
+    accurate = select_pipeline_plan("accurate")
+
+    assert fast.diarization_mode == "none"
+    assert fast.run_full_diarization is False
+    assert fast.time_budget_seconds is None
+
+    assert balanced.diarization_mode == "lightweight"
+    assert balanced.actual_pipeline == "balanced_text_analysis"
+    assert balanced.run_full_diarization is False
+    assert balanced.time_budget_seconds == 1800.0
+
+    assert accurate.diarization_mode == "full"
+    assert accurate.run_full_diarization is True
+    assert accurate.time_budget_seconds is None
+
+
+def test_completed_job_exposes_pipeline_diagnostics(tmp_path, monkeypatch):
+    def fake_preprocess_audio(
+        source_path: Path,
+        wav_path: Path,
+        profile: str = "speech",
+        timeout_seconds: float = 900.0,
+    ) -> dict[str, object]:
+        wav_path.parent.mkdir(parents=True, exist_ok=True)
+        wav_path.write_bytes(b"fake wav")
+        return {"audio_profile": profile, "sample_rate": 16000, "channels": 1}
+
+    settings = Settings(data_dir=tmp_path, text_polish_provider="off", diarization_enabled=False)
+    service = JobService(settings)
+    service.transcriber = FakeTranscriber()
+
+    monkeypatch.setattr(services_module, "preprocess_audio", fake_preprocess_audio)
+    monkeypatch.setattr(main_module, "service", service)
+
+    with TestClient(main_module.app) as client:
+        response = client.post(
+            "/api/upload",
+            data={"asr_quality": "balanced"},
+            files={"file": ("sample.m4a", b"fake audio", "audio/mp4")},
+        )
+        assert response.status_code == 201
+        job_id = response.json()["id"]
+
+        job = None
+        for _ in range(20):
+            job = client.get(f"/api/jobs/{job_id}").json()
+            if job["status"] == "completed":
+                break
+            time.sleep(0.05)
+
+    assert job is not None
+    diagnostics = job["diagnostics"]
+    assert diagnostics["selected_mode"] == "balanced"
+    assert diagnostics["actual_pipeline"] == "balanced_text_analysis"
+    assert diagnostics["diarization_mode"] == "lightweight"
+    assert diagnostics["fallback_used"] is False
+    assert diagnostics["speaker_separation_status"] == "lightweight_text_heuristics"
+    assert diagnostics["time_budget"] is None
+    assert diagnostics["text_analysis_status"] == "local_fallback"
+    assert diagnostics["text_analysis_provider"] == "auto"
+    assert diagnostics["elapsed_time"] is not None
 
 
 def test_asr_progress_reserves_time_for_remaining_phases():

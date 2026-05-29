@@ -146,6 +146,8 @@ class FasterWhisperEngine:
         custom_vocabulary: str = "",
         source_duration_seconds: object = None,
         progress_callback: Callable[[str, float, str], None] | None = None,
+        raw_asr_callback: Callable[[str, list[TranscriptSegment]], None] | None = None,
+        run_diarization: bool = True,
     ) -> TranscriptionResult:
         started_at = time.perf_counter()
         timings: dict[str, float] = {}
@@ -160,15 +162,28 @@ class FasterWhisperEngine:
             warnings.append(f"Accurate ASR model unavailable; falling back to {self.model_name}: {exc}")
             selected_model = self.model_name
             model = self._load_model(selected_model)
+        if progress_callback:
+            progress_callback(
+                "asr",
+                8.0,
+                f"ASR model={selected_model}, device={self.device}, compute={self.compute_type}",
+            )
+        LOGGER.info(
+            "ASR start: model=%s quality=%s device=%s compute=%s",
+            selected_model,
+            normalized_quality,
+            self.device,
+            self.compute_type,
+        )
         asr_started_at = time.perf_counter()
-        prompt = build_quality_prompt(self.initial_prompt)
-        hotwords = build_quality_prompt(self.hotwords)
+        prompt = "" if normalized_quality == "fast" else build_quality_prompt(self.initial_prompt)
+        hotwords = "" if normalized_quality == "fast" else build_quality_prompt(self.hotwords)
         prompt_echo_terms = extract_prompt_echo_terms(participant_names, custom_vocabulary)
         generated_segments, _ = model.transcribe(
             str(audio_path),
             language=language,
             vad_filter=True,
-            word_timestamps=True,
+            word_timestamps=normalized_quality != "fast",
             condition_on_previous_text=False,
             initial_prompt=prompt or None,
             hotwords=hotwords or None,
@@ -206,9 +221,10 @@ class FasterWhisperEngine:
             segments.append(transcript_segment)
             if progress_callback and duration and duration > 0:
                 audio_progress = min(1.0, max(0.0, float(segment.end) / float(duration)))
+                asr_progress_span = 75.0 if normalized_quality == "fast" else 22.0
                 progress_callback(
                     "asr",
-                    8.0 + (audio_progress * 22.0),
+                    8.0 + (audio_progress * asr_progress_span),
                     "Распознаем речь",
                 )
         timings["asr_seconds"] = round(time.perf_counter() - asr_started_at, 3)
@@ -219,12 +235,22 @@ class FasterWhisperEngine:
 
         raw_segments = [dict(segment) for segment in segments]
         raw_text = render_raw_asr_text(raw_segments)
-        quality_warnings = build_asr_quality_warnings(raw_segments, normalized_quality, selected_model)
+        if raw_asr_callback:
+            raw_asr_callback(raw_text, raw_segments)
+        quality_warnings = build_asr_quality_warnings(
+            raw_segments,
+            normalized_quality,
+            selected_model,
+            self.device,
+            self.compute_type,
+        )
         warnings.extend(quality_warnings)
 
         diarization_status = "disabled"
         turns: list[SpeakerTurn] = []
-        if self.diarization_engine is not None:
+        raw_speaker_count = 0
+        effective_run_diarization = run_diarization and normalized_quality == "accurate"
+        if self.diarization_engine is not None and effective_run_diarization:
             diarization_started_at = time.perf_counter()
             if progress_callback:
                 progress_callback("diarization", 32.0, "Разделяем участников по голосам")
@@ -249,8 +275,24 @@ class FasterWhisperEngine:
                 diarization_status = "failed"
                 warnings.append(f"Diarization failed; text-only speaker assignment was used: {exc}")
                 LOGGER.exception("Diarization failed; falling back to text-only speaker assignment.")
+        elif normalized_quality == "balanced":
+            lightweight_started_at = time.perf_counter()
+            if progress_callback:
+                progress_callback("diarization", 72.0, "Легко разделяем реплики")
+            segments, raw_speaker_count = apply_lightweight_speaker_segmentation(
+                segments,
+                expected_speakers=expected_speakers,
+            )
+            timings["lightweight_diarization_seconds"] = round(time.perf_counter() - lightweight_started_at, 3)
+            diarization_status = "lightweight"
+            warnings.append(
+                "Lightweight speaker separation used bounded text/timing heuristics; full acoustic diarization was not run."
+            )
         else:
-            warnings.append("Diarization is disabled; speaker labels come from text-only heuristics.")
+            if self.diarization_engine is not None and not effective_run_diarization:
+                warnings.append(f"Diarization skipped by {normalized_quality} ASR mode; speaker labels come from text-only heuristics.")
+            else:
+                warnings.append("Diarization is disabled; speaker labels come from text-only heuristics.")
 
         if progress_callback:
             progress_callback("postprocess", 88.0, "Проверяем структуру текста")
@@ -258,12 +300,13 @@ class FasterWhisperEngine:
             segments,
             language=language,
             preserve_words=self.preserve_asr_words,
-            allow_text_speaker_guess=False,
+            allow_text_speaker_guess=normalized_quality == "balanced",
         )
         speaker_count = len(
             {segment.get("speaker", "") for segment in processed_segments if segment.get("speaker")}
         )
-        raw_speaker_count = count_turn_speakers(turns)
+        if turns:
+            raw_speaker_count = count_turn_speakers(turns)
         if raw_speaker_count and speaker_count < raw_speaker_count:
             warnings.append(
                 f"Post-processing collapsed speakers from {raw_speaker_count} raw clusters to {speaker_count} final labels."
@@ -304,6 +347,40 @@ def extract_segment_words(segment: object) -> list[TranscriptWord]:
     return extracted
 
 
+def apply_lightweight_speaker_segmentation(
+    segments: list[TranscriptSegment],
+    expected_speakers: int | None = None,
+) -> tuple[list[TranscriptSegment], int]:
+    if not segments:
+        return segments, 0
+    speaker_count = expected_speakers if expected_speakers and 1 < expected_speakers <= 6 else 2
+    current_index = 0
+    assigned: list[TranscriptSegment] = []
+    previous: TranscriptSegment | None = None
+    for segment in segments:
+        if previous and should_switch_lightweight_speaker(previous, segment):
+            current_index = (current_index + 1) % speaker_count
+        speaker = f"Спикер {current_index + 1}"
+        assigned_segment = {**segment, "speaker": speaker, "raw_speaker": f"lightweight_{current_index + 1}"}
+        assigned.append(assigned_segment)
+        previous = assigned_segment
+    used = {segment.get("speaker", "") for segment in assigned if segment.get("speaker")}
+    return assigned, len(used)
+
+
+def should_switch_lightweight_speaker(previous: TranscriptSegment, current: TranscriptSegment) -> bool:
+    previous_text = previous["text"].strip()
+    current_text = current["text"].strip()
+    gap = max(0.0, float(current["start"]) - float(previous["end"]))
+    if previous_text.endswith("?") and gap <= 12.0:
+        return True
+    if 1.0 <= gap <= 8.0 and len(current_text) <= 260:
+        return True
+    if gap > 8.0 and len(previous_text) <= 320 and len(current_text) <= 320:
+        return True
+    return False
+
+
 def render_raw_asr_text(segments: list[TranscriptSegment]) -> str:
     return "\n".join(segment["text"].strip() for segment in segments if segment["text"].strip()).strip()
 
@@ -317,7 +394,7 @@ def decode_options(quality: str) -> dict[str, object]:
     if quality == "accurate":
         return {"beam_size": 8, "best_of": 5, "patience": 1.2, "temperature": [0.0, 0.2]}
     if quality == "fast":
-        return {"beam_size": 3}
+        return {"beam_size": 1}
     return {"beam_size": 5, "best_of": 3}
 
 
@@ -396,8 +473,11 @@ def build_asr_quality_warnings(
     segments: list[TranscriptSegment],
     quality: str,
     model_name: str,
+    device: str = "",
+    compute_type: str = "",
 ) -> list[str]:
-    warnings: list[str] = [f"ASR quality={quality}, model={model_name}."]
+    device_part = f", device={device}, compute={compute_type}" if device or compute_type else ""
+    warnings: list[str] = [f"ASR quality={quality}, model={model_name}{device_part}."]
     low_confidence_words = 0
     one_character_segments = 0
     for segment in segments:

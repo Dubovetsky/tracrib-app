@@ -1,5 +1,61 @@
 # Chat History
 
+## Session 13: fix fast-mode SLA, early RAW artifact, and cancellable diagnostics
+
+Date: 2026-05-21
+
+Request: investigate why the UI countdown finishes but processing continues for a selected recognition quality, why quality choices appear not to change the real backend path, why fast mode takes far too long, and why logs/RAW are unavailable after cancellation or failure.
+
+Diagnosis:
+
+- The quality selector was not a complete pipeline selector. `fast` only changed faster-whisper decode options, but still ran the same expensive post-ASR pipeline shape, including acoustic diarization when configured.
+- `raw_asr.txt` was generated only after `FasterWhisperEngine.transcribe()` returned, which means after diarization and postprocessing. For a long ASR/diarization run, users had no early raw artifact.
+- The latest real `fast` job for `Моя запись 60.m4a` stayed in `asr` for about 55 minutes and was cancelled with no RAW artifact. The job DB had `raw_text_path=null`, so the user could not inspect partial ASR output.
+- Previous completed jobs showed pyannote as the dominant runtime cost: one 85-minute recording spent about 13 seconds in ASR but about 3154 seconds in diarization. Treating fast mode as a full diarization path is therefore a broken promise.
+
+Changes:
+
+- `fast` mode is now an ASR-only draft path: skips acoustic diarization and disables text polish for that job.
+- `FasterWhisperEngine.transcribe()` now accepts `run_diarization` and `raw_asr_callback`.
+- Backend writes `raw_asr.txt` immediately after ASR segments are produced and updates `raw_text_path` while the job is still processing.
+- `/api/jobs/{job_id}/download/raw-txt` can now return RAW while a job is processing, and still falls back for completed legacy jobs.
+- Added `/api/jobs/{job_id}/download/logs` for failed/cancelled diagnostics.
+- ASR status now reports/logs actual `model`, `device`, and `compute`, so CPU fallback or wrong model path is visible during processing.
+- Fast-mode ETA baseline changed to reflect ASR-only draft behavior.
+- Frontend shows RAW download as soon as `raw_text_path` exists and shows LOGS for failed jobs.
+
+Checks:
+
+```powershell
+python -m py_compile backend\app\transcriber.py backend\app\services.py backend\app\main.py backend\app\performance.py
+python -m pytest tests
+npm.cmd run build
+```
+
+Result:
+
+```text
+66 passed
+frontend build passed
+```
+
+Follow-up:
+
+- Implemented hard cancellation with isolated per-job worker subprocesses. The parent backend tracks the worker PID and terminates the process tree on cancellation; on Windows this uses `taskkill /T /F`, so child processes such as ffmpeg are killed too.
+- Added per-file logs at `backend/data/results/{job_id}/job.log`; `/api/jobs/{job_id}/download/logs` now serves the job-specific log during processing and after success/failure.
+- Upload file selection, submit, and recognition-quality selection are disabled while any job is queued or processing.
+- The delete cross is hidden for queued/processing jobs.
+- History deletion now requires an explicit irreversible-delete confirmation overlay on the row.
+- Progress now shows current stage, percent, elapsed time, planned total, and remaining estimate instead of behaving like a fake countdown.
+- Diagnosed balanced mode regression: the completed job `362d881d-7bba-43ea-a31f-2011c6ff1c5a` spent `58.6s` in ASR and `3913s` in pyannote diarization. Balanced was therefore effectively paying maximum-mode speaker-analysis cost.
+- Balanced mode is now a draft-plus-cleanup mode without full pyannote diarization. Full acoustic speaker diarization is reserved for `accurate` / maximum mode.
+- Fast and balanced draft runs no longer calibrate maximum ETA; ASR-only samples cannot poison full diarization estimates.
+- Transcript display hides the text caret so the result panel does not look like an editable input cursor.
+
+Known limitation:
+
+- Fast and balanced modes intentionally sacrifice acoustic speaker fidelity. Correct "who spoke when" requires maximum mode with full diarization, or a future faster diarization implementation.
+
 ## Session 12: remove subtitle/JSON exports and stop fake speaker alternation
 
 Date: 2026-05-21
@@ -1004,4 +1060,118 @@ tests/test_api_smoke.py: 11 passed
 frontend build: passed
 backend restarted on 127.0.0.1:8000
 frontend running on 127.0.0.1:5173
+```
+
+## Сессия 14: hard cancel, per-job logs, balanced ASR без скрытого maximum
+
+Дата: 2026-05-22
+
+Контекст:
+
+- Пользователь показал регрессию: balanced для файла `Моя запись 60.m4a` обещал около 21 минуты, зависал визуально на 28%, а завершился примерно за 67 минут.
+- По данным job timing причина не в ASR: `asr_seconds` около 58.6 сек, `diarization_seconds` около 3913 сек. То есть balanced фактически запускал тяжелую pyannote diarization и вел себя как maximum.
+- Требования: real-time log на каждый файл, hard cancel, блокировка выбора файла/качества при активной обработке, удаление только через подтверждение, честный progress/ETA, отсутствие мигающих UI-элементов.
+
+Сделано:
+
+- Каждая production job запускается в отдельном subprocess worker. Cancel теперь убивает дерево процесса по PID, а не только ставит cooperative flag.
+- Для каждой job создается отдельный `job.log` в каталоге результата; `/download/logs` отдает именно per-job log и доступен во время обработки и после успешного завершения.
+- RAW ASR сохраняется и доступен до окончания полной обработки, если ASR уже завершился.
+- Fast и balanced переведены в draft pipeline без full pyannote diarization. Full diarization оставлена только для accurate/maximum.
+- ETA разделяет draft pipeline и full-diarization pipeline. Старые balanced-запуски с `diarization_seconds > 60` больше не используются для калибровки нового balanced ETA, чтобы исторический дефект не портил текущую оценку.
+- UI блокирует выбор аудио и качество распознавания при активной обработке.
+- Крестик удаления скрыт у активной job; удаление history item требует явного подтверждения поверх элемента.
+- В fast/balanced из pipeline pills убран этап `Голоса`, потому что он больше не должен запускаться.
+- Убраны мигающие/pulsing/shimmer состояния и скрыт caret в transcript textarea.
+
+Проверки:
+
+```powershell
+python -m pytest tests
+npm.cmd run build
+```
+
+Результат:
+
+```text
+72 passed, 4 warnings
+frontend build passed
+```
+
+## Сессия 15: явный контракт режимов ASR pipeline
+
+Дата: 2026-05-22
+
+Контекст:
+
+- Пользователь зафиксировал правило: fast, balanced и maximum должны быть отдельными pipeline с собственными ограничениями, diagnostics и runtime, без скрытого смешивания режимов.
+- Повторный balanced-прогон показал старый production defect: `ASR` занял около минуты, а `Diarization` около 69 минут, то есть balanced снова фактически стал maximum.
+
+Сделано:
+
+- Добавлен простой `PipelinePlan` без лишней архитектуры:
+  - `fast` -> `actual_pipeline=fast_asr_only`, `diarization_mode=none`;
+  - `balanced` -> `actual_pipeline=balanced_asr_lightweight_speakers`, `diarization_mode=lightweight`, bounded budget `900s`;
+  - `accurate` -> `actual_pipeline=maximum_full_diarization`, `diarization_mode=full`.
+- В `FasterWhisperEngine` добавлен нижний предохранитель: full diarization физически запускается только для `accurate`, даже если caller ошибочно передаст `run_diarization=True` для balanced.
+- Balanced использует `conservative` audio preprocessing без тяжелого `loudnorm`.
+- В jobs добавлено поле `diagnostics_json`; API возвращает `diagnostics` с `selected_mode`, `actual_pipeline`, `diarization_mode`, `fallback_used`, `fallback_reason`, `speaker_separation_status`, `time_budget`, `elapsed_time`.
+- UI показывает diagnostics для активных и завершенных jobs, а не только старые timing badges.
+- Добавлены тесты на разделение режимов, отсутствие mode drift, bounded balanced и наличие diagnostics.
+
+Проверки:
+
+```powershell
+python -m pytest tests/test_api_smoke.py tests/test_db.py tests/test_transcriber_fallback.py tests/test_performance_profile.py
+npm.cmd run build
+```
+
+Результат:
+
+```text
+39 passed, 4 warnings
+frontend build passed
+```
+
+## Сессия 16: balanced перестал быть копией fast
+
+Дата: 2026-05-22
+
+Контекст:
+
+- Пользователь прогнал последние `fast` и `balanced` jobs и указал реальный дефект: результаты почти не отличались, runtime отличался на секунды. Это означало, что balanced не выполнял роль среднего режима между fast и maximum.
+
+Сделано:
+
+- `fast` сделан более draft-like: `beam_size=1`, без `word_timestamps`, без ASR glossary prompt/hotwords. Это уменьшает стоимость и оставляет fast максимально быстрым черновиком.
+- `balanced` сохраняет более качественный decode (`beam_size=5`, `best_of=3`), glossary prompt/hotwords и word timestamps.
+- Для `balanced` добавлена bounded lightweight speaker segmentation без pyannote: эвристики пауз и question/answer turns назначают стабильные `Спикер N` labels. Это не full acoustic diarization и не hidden maximum.
+- `balanced` diagnostics теперь получает `diarization_status=lightweight`, timing `lightweight_diarization_seconds`, warning о bounded text/timing heuristics и `speaker_separation_status=lightweight_completed`.
+
+## Сессия 17: balanced возвращён к среднему text-analysis pipeline
+
+- Пользователь уточнил корректный product contract: `fast` должен остаться быстрым черновиком, `maximum` остаётся тяжёлым максимальным качеством, а `balanced` должен восстановить ранний средний механизм — без acoustic diarization, но с анализом, структурированием текста и попыткой разделения/наведения порядка, с ожиданием порядка 20-30 минут для длинной записи.
+- Исправлен mode contract: `balanced` теперь объявляется как `actual_pipeline=balanced_text_analysis`, а не как почти быстрый ASR.
+- ETA для `balanced` поднята до среднего bounded пути: базовый RTF увеличен так, чтобы 1 час аудио оценивался примерно в 25 минут, а старые дефектные balanced/full-diarization samples и быстрые fast-like samples не калибровали новый balanced ETA.
+- `balanced` больше не принимает `TEXT_POLISH_PROVIDER=off/local` как тихое отключение среднего анализа: pipeline пробует `auto` provider chain и только затем явно падает в local fallback.
+- Diagnostics теперь показывают `text_analysis_status` и `text_analysis_provider`. Если нет ключей провайдера text polish, balanced честно помечается как `local_fallback`, потому что без внешнего/локального LLM-провайдера он физически не может дать старый глубокий анализ.
+- `fast` по-прежнему не запускает diarization и не делает lightweight speaker segmentation.
+
+Уточнение после проверки UI:
+
+- Статичный `Budget: 30m` в карточке diagnostics признан некорректным UX: это выглядело как искусственная привязка процесса ко времени, а не как оценка реального pipeline.
+- UI больше не показывает `time_budget` как пользовательский ETA.
+- Для `balanced` добавлен отдельный estimate-path: если text analysis уходит в `local_fallback`, стартовая оценка считается как быстрый локальный cleanup path (`balanced_local`), а не как средний provider-chain path.
+- Если text-polish provider настроен, `balanced` остаётся средним text-analysis path. Если provider отсутствует, приложение должно честно показать fallback и не обещать 20-30 минут анализа, которого фактически нет.
+
+Проверки:
+
+```powershell
+python -m pytest tests
+```
+
+Результат:
+
+```text
+75 passed, 4 warnings
 ```

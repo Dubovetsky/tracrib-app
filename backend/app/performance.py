@@ -11,8 +11,9 @@ from typing import Any
 # Baseline total real-time factors for CUDA-class local processing with diarization.
 # Example: 0.17 means roughly 10 minutes for 1 hour of audio.
 QUALITY_BASE_RTF = {
-    "fast": 0.16,
-    "balanced": 0.29,
+    "fast": 0.08,
+    "balanced_local": 0.12,
+    "balanced": 0.40,
     "accurate": 0.58,
 }
 
@@ -146,10 +147,13 @@ def calibrated_realtime_factor(
         if duration < MIN_CALIBRATION_DURATION_SECONDS or total <= 0:
             continue
         sample_rtf = clamp_rtf(float(total) / float(duration))
+        diagnostics = parse_json_object(job.get("diagnostics_json"))
+        if not sample_matches_target_pipeline(str(job_quality), quality, timings, diagnostics):
+            continue
         if job_quality == quality and job_profile == profile:
             exact_samples.append(sample_rtf)
         baseline = default_realtime_factor(str(job_quality), str(job_profile))
-        if baseline > 0:
+        if baseline > 0 and can_scale_between_modes(str(job_quality), quality):
             scale_samples.append(sample_rtf / baseline)
 
     if exact_samples:
@@ -200,6 +204,39 @@ def count_calibration_samples(jobs: list[dict[str, Any]]) -> int:
 
 def clamp_rtf(value: float) -> float:
     return max(MIN_RTF, min(MAX_RTF, value))
+
+
+def same_pipeline_family(sample_quality: str, target_quality: str) -> bool:
+    draft_family = {"fast", "balanced"}
+    return (sample_quality in draft_family) == (target_quality in draft_family)
+
+
+def can_scale_between_modes(sample_quality: str, target_quality: str) -> bool:
+    if target_quality == "balanced" and sample_quality != "balanced":
+        return False
+    return same_pipeline_family(sample_quality, target_quality)
+
+
+def sample_matches_target_pipeline(
+    sample_quality: str,
+    target_quality: str,
+    timings: dict[str, Any],
+    diagnostics: dict[str, Any] | None = None,
+) -> bool:
+    if not same_pipeline_family(sample_quality, target_quality):
+        return False
+    diarization_seconds = timings.get("diarization_seconds")
+    has_full_diarization = isinstance(diarization_seconds, (float, int)) and diarization_seconds > 60
+    diagnostics = diagnostics or {}
+    if target_quality == "balanced":
+        return (
+            sample_quality == "balanced"
+            and not has_full_diarization
+            and diagnostics.get("actual_pipeline") == "balanced_text_analysis"
+        )
+    if target_quality == "fast":
+        return not has_full_diarization
+    return target_quality == "accurate"
 
 
 def parse_json_object(value: object) -> dict[str, Any]:

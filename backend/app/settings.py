@@ -67,7 +67,9 @@ class Settings:
     )
     text_polish_model: str = os.getenv("TEXT_POLISH_MODEL", "gpt-5-mini")
     text_polish_timeout_seconds: float = float(os.getenv("TEXT_POLISH_TIMEOUT_SECONDS", "90"))
+    audio_preprocess_timeout_seconds: float = float(os.getenv("AUDIO_PREPROCESS_TIMEOUT_SECONDS", "900"))
     openai_api_key: str | None = os.getenv("OPENAI_API_KEY")
+    job_subprocess_enabled: bool = os.getenv("JOB_SUBPROCESS_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
 
     @property
     def db_path(self) -> Path:

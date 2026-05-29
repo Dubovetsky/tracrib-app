@@ -15,6 +15,7 @@ OPTIONAL_JOB_COLUMNS = {
     "speaker_count": "INTEGER",
     "warnings_json": "TEXT",
     "timings_json": "TEXT",
+    "diagnostics_json": "TEXT",
     "diarization_turns_path": "TEXT",
     "segments_json_path": "TEXT",
     "diagnostics_json_path": "TEXT",
@@ -28,6 +29,7 @@ OPTIONAL_JOB_COLUMNS = {
     "progress_percent": "REAL",
     "progress_message": "TEXT",
     "cancel_requested": "INTEGER DEFAULT 0",
+    "job_log_path": "TEXT",
 }
 
 
@@ -94,7 +96,9 @@ class Database:
             "processing_stage": job.get("processing_stage"),
             "progress_percent": job.get("progress_percent"),
             "progress_message": job.get("progress_message"),
+            "diagnostics_json": job.get("diagnostics_json"),
             "cancel_requested": job.get("cancel_requested", 0),
+            "job_log_path": job.get("job_log_path"),
             "created_at": now,
             "updated_at": now,
         }
@@ -106,14 +110,16 @@ class Database:
                     language, expected_speaker_count, asr_quality, audio_profile,
                     participant_names, custom_vocabulary, source_duration_seconds,
                     estimated_total_seconds, processing_stage, progress_percent,
-                    progress_message, cancel_requested, created_at, updated_at
+                    progress_message, diagnostics_json, cancel_requested, job_log_path,
+                    created_at, updated_at
                 )
                 VALUES (
                     :id, :original_filename, :stored_audio_path, :status,
                     :language, :expected_speaker_count, :asr_quality, :audio_profile,
                     :participant_names, :custom_vocabulary, :source_duration_seconds,
                     :estimated_total_seconds, :processing_stage, :progress_percent,
-                    :progress_message, :cancel_requested, :created_at, :updated_at
+                    :progress_message, :diagnostics_json, :cancel_requested, :job_log_path,
+                    :created_at, :updated_at
                 )
                 """,
                 payload,

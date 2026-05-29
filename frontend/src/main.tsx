@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { AlertCircle, CircleStop, Download, FileAudio, RefreshCw, Upload, X } from "lucide-react";
 import "./styles.css";
@@ -13,6 +13,8 @@ type Job = {
   original_filename: string;
   status: JobStatus;
   error: string | null;
+  raw_text_path?: string | null;
+  job_log_path?: string | null;
   expected_speaker_count: number | null;
   asr_quality: string | null;
   audio_profile: string | null;
@@ -26,6 +28,7 @@ type Job = {
   speaker_count: number | null;
   warnings?: string[];
   timings?: Record<string, number>;
+  diagnostics?: Record<string, string | number | boolean | null>;
   created_at: string;
   updated_at: string;
   started_at: string | null;
@@ -56,6 +59,8 @@ function App() {
   const [uploadState, setUploadState] = useState<MessageType>("info");
   const [uploadStatus, setUploadStatus] = useState("");
   const [performanceProfile, setPerformanceProfile] = useState<PerformanceProfile | null>(null);
+  const [deleteConfirmJobId, setDeleteConfirmJobId] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const selectedJob = useMemo(
     () => jobs.find((job) => job.id === selectedJobId) ?? jobs[0] ?? null,
@@ -65,6 +70,8 @@ function App() {
     () => currentSidebarStatus(selectedFile, isUploading, uploadStatus, uploadState, selectedJob),
     [selectedFile, isUploading, uploadStatus, uploadState, selectedJob],
   );
+  const activeJob = useMemo(() => jobs.find(canCancelJob) ?? null, [jobs]);
+  const hasActiveProcess = Boolean(activeJob) || isUploading;
 
   async function loadJobs() {
     const response = await fetch(`${API_BASE}/api/jobs`);
@@ -127,13 +134,15 @@ function App() {
   function selectHistoryJob(jobId: string) {
     setSelectedJobId(jobId);
     setSelectedFile(null);
+    resetFileInput(fileInputRef);
     setUploadStatus("");
     setUploadState("info");
+    setDeleteConfirmJobId(null);
   }
 
   async function submitUpload(event: React.FormEvent) {
     event.preventDefault();
-    if (!selectedFile) return;
+    if (!selectedFile || hasActiveProcess) return;
     setIsUploading(true);
     showMessage("", "info");
     setUploadStatus("Загружаем файл");
@@ -150,6 +159,7 @@ function App() {
       const job = (await response.json()) as Job;
       setSelectedJobId(job.id);
       setSelectedFile(null);
+      resetFileInput(fileInputRef);
       showMessage("Обработка запущена", "processing");
       await Promise.all([loadJobs(), loadPerformanceProfile()]);
     } catch (error) {
@@ -171,6 +181,7 @@ function App() {
       return next;
     });
     if (selectedJobId === jobId) setResult("");
+    setDeleteConfirmJobId(null);
     showMessage("Запись удалена", "success");
   }
 
@@ -232,12 +243,19 @@ function App() {
 
       <section className="workspace">
         <form className="upload-panel" onSubmit={submitUpload}>
-          <label className="dropzone">
+          <label className={`dropzone ${hasActiveProcess ? "disabled" : ""}`}>
             <FileAudio size={28} />
-            <span className="selected-file-name">{selectedFile ? selectedFile.name : "Выберите аудио-файл"}</span>
+            <span className="selected-file-name">
+              {hasActiveProcess ? "Дождитесь завершения текущей обработки" : selectedFile ? selectedFile.name : "Выберите аудио-файл"}
+            </span>
             <input
+              ref={fileInputRef}
               type="file"
+              disabled={hasActiveProcess}
               accept="audio/*,video/*,.m4a,.mp3,.wav,.ogg,.flac,.aac,.mp4"
+              onClick={(event) => {
+                event.currentTarget.value = "";
+              }}
               onChange={(event) => {
                 const file = event.target.files?.[0] ?? null;
                 setSelectedFile(file);
@@ -251,13 +269,13 @@ function App() {
               }}
             />
           </label>
-          <button className="primary-button" type="submit" disabled={!selectedFile || isUploading}>
+          <button className="primary-button" type="submit" disabled={!selectedFile || hasActiveProcess}>
             <Upload size={18} />
             {isUploading ? "Загружаем..." : "Запустить обработку"}
           </button>
           <label className="number-field">
             <span>Качество распознавания</span>
-            <select value={asrQuality} onChange={(event) => setAsrQuality(event.target.value)}>
+            <select value={asrQuality} disabled={hasActiveProcess} onChange={(event) => setAsrQuality(event.target.value)}>
               <option value="maximum">Максимальное</option>
               <option value="balanced">Сбалансированное</option>
               <option value="fast">Быстрое</option>
@@ -274,17 +292,38 @@ function App() {
               <div key={job.id} className={`job-row ${selectedJob?.id === job.id ? "active" : ""}`}>
                 <button className="job-select" type="button" onClick={() => selectHistoryJob(job.id)}>
                   <span className="job-title">{job.original_filename}</span>
-                  <span className={`status ${job.status}`}>{statusLabel(job.status)}</span>
+                  <span className="job-meta-row">
+                    <span className={`status ${job.status}`}>{statusLabel(job.status)}</span>
+                    <span className={`quality-badge ${job.asr_quality ?? "balanced"}`}>
+                      {historyQualityLabel(job.asr_quality)}
+                    </span>
+                  </span>
                 </button>
-                <button
-                  className="delete-job"
-                  type="button"
-                  onClick={() => deleteJob(job.id)}
-                  title="Удалить"
-                  aria-label={`Удалить ${job.original_filename}`}
-                >
-                  <X size={16} />
-                </button>
+                {!canCancelJob(job) && (
+                  <button
+                    className="delete-job"
+                    type="button"
+                    onClick={() => setDeleteConfirmJobId(job.id)}
+                    title="Удалить"
+                    aria-label={`Удалить ${job.original_filename}`}
+                  >
+                    <X size={16} />
+                  </button>
+                )}
+                {deleteConfirmJobId === job.id && (
+                  <div className="delete-confirm">
+                    <strong>Удалить навсегда?</strong>
+                    <span>Будут удалены аудио, текст, RAW и логи этой записи.</span>
+                    <div>
+                      <button type="button" className="confirm-danger" onClick={() => deleteJob(job.id)}>
+                        Удалить
+                      </button>
+                      <button type="button" className="confirm-cancel" onClick={() => setDeleteConfirmJobId(null)}>
+                        Отмена
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             ))}
             {jobs.length === 0 && <p className="empty">Пока нет обработанных файлов</p>}
@@ -301,15 +340,20 @@ function App() {
                     {statusDescription(selectedJob)}
                   </p>
                   <PipelineModules job={selectedJob} />
-                  {selectedJob.status === "completed" && (
+                  {(selectedJob.status === "completed" || selectedJob.raw_text_path || selectedJob.job_log_path) && (
                     <div className="download-group">
-                      <DownloadLink jobId={selectedJob.id} format="txt" />
-                      <DownloadLink jobId={selectedJob.id} format="raw-txt" label="RAW" />
+                      {selectedJob.status === "completed" && <DownloadLink jobId={selectedJob.id} format="txt" />}
+                      {(selectedJob.status === "completed" || selectedJob.raw_text_path) && (
+                        <DownloadLink jobId={selectedJob.id} format="raw-txt" label="RAW" />
+                      )}
+                      {selectedJob.job_log_path && <DownloadLink jobId={selectedJob.id} format="logs" label="LOGS" />}
                     </div>
                   )}
                 </div>
               </div>
-              {selectedJob.status === "completed" && <JobDiagnostics job={selectedJob} />}
+              {selectedJob.diagnostics && Object.keys(selectedJob.diagnostics).length > 0 && (
+                <JobDiagnostics job={selectedJob} />
+              )}
               {selectedJob.status === "failed" && (
                 <div className="failed-state">
                   <AlertCircle size={18} />
@@ -354,17 +398,17 @@ function ProfileHelp({
       <div className="mode-help-list">
         <p>
           <span className="mode-help-title">Максимальное</span>
-          <small><strong>Около {qualityTimes("maximum")}</strong> / 1 час</small>
+          <small><strong>Около {qualityTimes("maximum")}</strong> / для записи длиной 1 час</small>
           <span className="mode-help-note">сложная речь, лучшая точность</span>
         </p>
         <p>
           <span className="mode-help-title">Сбалансированное</span>
-          <small><strong>Около {qualityTimes("balanced")}</strong> / 1 час</small>
-          <span className="mode-help-note">обычные записи встреч</span>
+          <small><strong>Около {qualityTimes("balanced")}</strong> / для записи длиной 1 час</small>
+          <span className="mode-help-note">анализ и структурирование текста</span>
         </p>
         <p>
           <span className="mode-help-title">Быстрое</span>
-          <small><strong>Около {qualityTimes("fast")}</strong> / 1 час</small>
+          <small><strong>Около {qualityTimes("fast")}</strong> / для записи длиной 1 час</small>
           <span className="mode-help-note">быстрый черновик</span>
         </p>
       </div>
@@ -384,6 +428,10 @@ function currentSidebarStatus(
   if (uploadStatus && uploadState === "error") return { text: uploadStatus, type: "error" };
   if (selectedJob) return jobSidebarStatus(selectedJob);
   return null;
+}
+
+function resetFileInput(ref: React.RefObject<HTMLInputElement | null>) {
+  if (ref.current) ref.current.value = "";
 }
 
 function canCancelJob(job: Job) {
@@ -415,13 +463,12 @@ function ProcessingEstimate({ job, now }: { job: Job; now: number }) {
   if (!total) return <span className="eta">Оценка времени появится после анализа файла</span>;
   const remaining = Math.max(0, total - elapsed);
   const progress = job.progress_percent ?? Math.min(96, Math.max(4, (elapsed / total) * 100));
-  const remainingText =
-    remaining < 60 && progress < 97
-      ? "время уточняется"
-      : `осталось примерно ${formatDuration(remaining)}`;
+  const remainingText = remaining < 60 && progress < 97 ? "время уточняется" : `остаток ~ ${formatDuration(remaining)}`;
+  const totalText = `план ~ ${formatDuration(total)}`;
   return (
     <span className="eta">
-      <span>{remainingText}</span>
+      <span>{stageStatusLabel(job.processing_stage)} / {Math.round(progress)}%</span>
+      <span>прошло {formatDuration(elapsed)} / {totalText} / {remainingText}</span>
       <span className="eta-bar"><span style={{ width: `${progress}%` }} /></span>
     </span>
   );
@@ -435,10 +482,12 @@ function PipelineModules({ job }: { job: Job }) {
     ["polish", "Текст"],
     ["export", "Файл"],
   ] as const;
-  const currentIndex = stages.findIndex(([stage]) => stage === job.processing_stage);
+  const visibleStages =
+    job.asr_quality === "accurate" ? stages : stages.filter(([stage]) => stage !== "diarization");
+  const currentIndex = visibleStages.findIndex(([stage]) => stage === job.processing_stage);
   return (
     <div className="module-status" aria-label="Статус модулей обработки">
-      {stages.map(([stage, label], index) => {
+      {visibleStages.map(([stage, label], index) => {
         const state = moduleState(job, index, currentIndex);
         return (
           <span key={stage} className={`module-pill ${state}`}>
@@ -468,7 +517,16 @@ function moduleState(job: Job, index: number, currentIndex: number) {
 function JobDiagnostics({ job }: { job: Job }) {
   const warnings = job.warnings ?? [];
   const timings = job.timings ?? {};
+  const diagnostics = job.diagnostics ?? {};
   const items = [
+    diagnostics.selected_mode ? `Mode: ${diagnostics.selected_mode}` : "",
+    diagnostics.actual_pipeline ? `Pipeline: ${diagnostics.actual_pipeline}` : "",
+    diagnostics.diarization_mode ? `Speaker mode: ${diagnostics.diarization_mode}` : "",
+    diagnostics.speaker_separation_status ? `Speakers: ${diagnostics.speaker_separation_status}` : "",
+    diagnostics.text_analysis_status ? `Text analysis: ${diagnostics.text_analysis_status}` : "",
+    diagnostics.text_analysis_provider ? `Text provider: ${diagnostics.text_analysis_provider}` : "",
+    diagnostics.fallback_used ? `Fallback: ${diagnostics.fallback_reason || "used"}` : "",
+    typeof diagnostics.elapsed_time === "number" ? `Elapsed: ${formatTiming(diagnostics.elapsed_time)}` : "",
     job.diarization_status ? `Diarization: ${job.diarization_status}` : "",
     job.asr_quality ? `ASR: ${qualityLabel(job.asr_quality)}` : "",
     job.raw_speaker_count ? `Acoustic: ${job.raw_speaker_count}` : "",
@@ -504,7 +562,7 @@ function DownloadLink({
   label,
 }: {
   jobId: string;
-  format: "txt" | "raw-txt";
+  format: "txt" | "raw-txt" | "logs";
   label?: string;
 }) {
   return (
@@ -528,7 +586,7 @@ function formatDuration(value: number) {
 
 function estimateFromDuration(job: Job) {
   if (!job.source_duration_seconds) return null;
-  const qualityFactors: Record<string, number> = { fast: 0.16, balanced: 0.29, accurate: 0.58, maximum: 0.58 };
+  const qualityFactors: Record<string, number> = { fast: 0.08, balanced: 0.40, accurate: 0.58, maximum: 0.58 };
   const profileFactors: Record<string, number> = { plain: 0, conservative: 0.01, speech: 0.02 };
   const audioProfile = job.audio_profile ?? autoAudioProfileForQuality(job.asr_quality ?? "balanced");
   return (
@@ -540,7 +598,7 @@ function estimateFromDuration(job: Job) {
 }
 
 function fallbackOneHourEstimate(quality: string) {
-  const qualityFactors: Record<string, number> = { fast: 0.16, balanced: 0.29, accurate: 0.58, maximum: 0.58 };
+  const qualityFactors: Record<string, number> = { fast: 0.08, balanced: 0.40, accurate: 0.58, maximum: 0.58 };
   const profileFactors: Record<string, number> = { plain: 0, conservative: 0.01, speech: 0.02 };
   const profile = autoAudioProfileForQuality(quality);
   return 3600 * ((qualityFactors[quality] ?? 0.55) + (profileFactors[profile] ?? 0.04)) + 15;
@@ -548,7 +606,7 @@ function fallbackOneHourEstimate(quality: string) {
 
 function autoAudioProfileForQuality(quality: string) {
   if (quality === "maximum") return "speech";
-  return quality === "fast" ? "conservative" : "speech";
+  return quality === "fast" || quality === "balanced" ? "conservative" : "speech";
 }
 
 function apiQualityValue(quality: string) {
@@ -557,6 +615,14 @@ function apiQualityValue(quality: string) {
 
 function qualityLabel(quality: string) {
   return quality === "accurate" ? "maximum" : quality;
+}
+
+function historyQualityLabel(quality: string | null) {
+  return {
+    accurate: "Maximum",
+    balanced: "Balanced",
+    fast: "Fast",
+  }[quality ?? "balanced"] ?? "Balanced";
 }
 
 function statusLabel(status: JobStatus) {

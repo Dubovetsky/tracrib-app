@@ -109,13 +109,26 @@ def download_txt(job_id: str) -> FileResponse:
 
 @app.get("/api/jobs/{job_id}/download/raw-txt")
 def download_raw_txt(job_id: str) -> FileResponse:
-    return download_result(
-        job_id,
-        "raw_text_path",
-        "raw_asr.txt",
-        "text/plain",
-        fallback_fields=("text_path",),
-    )
+    job = service.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    path = optional_existing_job_path(job, ("raw_text_path",))
+    if path is None:
+        if job["status"] != "completed":
+            raise HTTPException(status_code=409, detail="Raw ASR is not available yet")
+        path = first_existing_job_path(job, ("text_path",))
+    return FileResponse(path, filename="raw_asr.txt", media_type="text/plain")
+
+
+@app.get("/api/jobs/{job_id}/download/logs")
+def download_job_logs(job_id: str) -> FileResponse:
+    job = service.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    log_path = optional_existing_job_path(job, ("job_log_path",))
+    if log_path is None:
+        raise HTTPException(status_code=404, detail="Backend log file not found")
+    return FileResponse(log_path, filename=f"{job_id}-backend.log", media_type="text/plain")
 
 
 def get_completed_job(job_id: str) -> dict:
@@ -142,6 +155,13 @@ def download_result(
 
 
 def first_existing_job_path(job: dict, fields: tuple[str, ...]) -> Path:
+    path = optional_existing_job_path(job, fields)
+    if path is not None:
+        return path
+    raise HTTPException(status_code=404, detail="Result file not found")
+
+
+def optional_existing_job_path(job: dict, fields: tuple[str, ...]) -> Path | None:
     for field in fields:
         value = job.get(field)
         if not value:
@@ -149,4 +169,4 @@ def first_existing_job_path(job: dict, fields: tuple[str, ...]) -> Path:
         path = Path(value)
         if path.exists():
             return path
-    raise HTTPException(status_code=404, detail="Result file not found")
+    return None

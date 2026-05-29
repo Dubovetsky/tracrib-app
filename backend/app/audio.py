@@ -4,11 +4,17 @@ import subprocess
 from pathlib import Path
 
 
-def preprocess_audio(input_path: Path, output_path: Path, profile: str = "speech") -> dict[str, object]:
+def preprocess_audio(
+    input_path: Path,
+    output_path: Path,
+    profile: str = "speech",
+    timeout_seconds: float = 900.0,
+) -> dict[str, object]:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     normalized_profile = normalize_audio_profile(profile)
     command = [
         "ffmpeg",
+        "-nostdin",
         "-y",
         "-i",
         str(input_path),
@@ -20,9 +26,14 @@ def preprocess_audio(input_path: Path, output_path: Path, profile: str = "speech
         str(output_path),
     ]
     try:
-        subprocess.run(command, check=True, capture_output=True, text=True)
+        subprocess.run(command, check=True, capture_output=True, text=True, timeout=timeout_seconds)
     except FileNotFoundError as exc:
         raise RuntimeError("ffmpeg not found in PATH. Install ffmpeg and restart backend.") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"ffmpeg audio preprocess exceeded {timeout_seconds:.0f}s timeout; "
+            "the conversion was killed so the queue can continue."
+        ) from exc
     except subprocess.CalledProcessError as exc:
         details = (exc.stderr or exc.stdout or "").strip()
         raise RuntimeError(f"ffmpeg could not prepare audio: {details}") from exc

@@ -12,6 +12,7 @@
 }
 
 body {
+  caret-color: transparent;
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
@@ -21,7 +22,24 @@ button,
 input,
 select,
 textarea {
+  caret-color: auto;
   font: inherit;
+}
+
+button,
+select,
+.dropzone,
+.history-card,
+.profile-help,
+.mode-help-list,
+.module-status,
+.diagnostics,
+.processing-state,
+.job-title,
+.job-current-status,
+.download-group {
+  caret-color: transparent;
+  user-select: none;
 }
 
 .app-shell {
@@ -98,6 +116,12 @@ textarea {
   min-height: 120px;
   padding: 14px;
   text-align: center;
+}
+
+.dropzone.disabled {
+  background: #f1f5f3;
+  color: #7b878c;
+  cursor: not-allowed;
 }
 
 .dropzone input {
@@ -213,6 +237,13 @@ textarea {
   width: 100%;
 }
 
+.number-field select:disabled,
+.number-field input:disabled {
+  background: #f1f5f3;
+  color: #7b878c;
+  cursor: not-allowed;
+}
+
 .history-panel {
   align-self: stretch;
   display: flex;
@@ -273,6 +304,46 @@ textarea {
   width: 100%;
 }
 
+.job-meta-row {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.quality-badge {
+  align-items: center;
+  background: #eef3f1;
+  border: 1px solid #d7e0dc;
+  border-radius: 999px;
+  color: #52616a;
+  display: inline-flex;
+  font-size: 11px;
+  font-weight: 750;
+  height: 24px;
+  letter-spacing: 0;
+  line-height: 1;
+  padding: 0 8px;
+}
+
+.quality-badge.fast {
+  background: #eef7f4;
+  border-color: #c8e4d9;
+  color: #126345;
+}
+
+.quality-badge.balanced {
+  background: #f4f6f5;
+  border-color: #dbe5e0;
+  color: #334148;
+}
+
+.quality-badge.accurate {
+  background: #fff4d6;
+  border-color: #ead18d;
+  color: #7b5512;
+}
+
 .delete-job {
   align-items: center;
   background: transparent;
@@ -292,6 +363,54 @@ textarea {
 .delete-job:hover {
   background: #ffe2dc;
   color: #9a2c1e;
+}
+
+.delete-confirm {
+  align-content: center;
+  background: rgba(127, 29, 29, 0.96);
+  border-radius: 8px;
+  color: #ffffff;
+  display: grid;
+  gap: 8px;
+  inset: 0;
+  padding: 12px;
+  position: absolute;
+  z-index: 2;
+}
+
+.delete-confirm strong {
+  font-size: 14px;
+}
+
+.delete-confirm span {
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.delete-confirm div {
+  display: flex;
+  gap: 8px;
+}
+
+.confirm-danger,
+.confirm-cancel {
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 800;
+  min-height: 30px;
+  padding: 0 10px;
+}
+
+.confirm-danger {
+  background: #ffffff;
+  color: #7f1d1d;
+}
+
+.confirm-cancel {
+  background: rgba(255, 255, 255, 0.16);
+  color: #ffffff;
 }
 
 .status {
@@ -509,6 +628,7 @@ textarea {
   border: 1px solid #dfe6e2;
   border-radius: 8px;
   color: #1f2a30;
+  caret-color: transparent;
   flex: 1;
   min-height: 0;
   padding: 14px;

@@ -12,6 +12,11 @@
 - Upload flow now treats `expected_speakers` as required for reliable diarization. Auto speaker count is not a production-quality default for meetings.
 - Upload flow accepts per-job participant names and custom vocabulary; these are appended to ASR prompt/hotwords instead of relying on one generic deployment glossary.
 - Upload flow accepts `asr_quality` (`fast`, `balanced`, `accurate`) and `audio_profile` (`plain`, `conservative`, `speech`). Accurate mode prefers full `large-v3`; if unavailable, backend falls back to the default model with an explicit warning.
+- `fast` mode is an ASR-only draft path: it must skip acoustic diarization and cloud/local text polish, write `raw_asr.txt` immediately after ASR, and expose model/device/compute status while running. If fast mode pays the pyannote diarization cost or hides CPU fallback, that is a production SLA defect.
+- `/api/jobs/{job_id}/download/raw-txt` must be available as soon as `raw_asr.txt` exists, including while the job is still `processing` or after cancellation/failure. Completed legacy jobs may fall back to final TXT.
+- `/api/jobs/{job_id}/download/logs` exposes the backend log for failed/cancelled diagnosis. Users must be able to inspect what happened before cancellation or error.
+- Production jobs run in an isolated worker subprocess by default (`JOB_SUBPROCESS_ENABLED=1`). Cancellation must terminate the worker PID/process tree, not only mark a DB flag. Tests may disable subprocess execution with `JOB_SUBPROCESS_ENABLED=0` or `Settings(job_subprocess_enabled=False)`.
+- Each job has its own `job.log` under `backend/data/results/{job_id}/job.log`; shared `backend.log` is not sufficient for user-facing diagnostics.
 - Audio preprocessing has speech enhancement (`highpass`, `lowpass`, `loudnorm`) and records preprocess diagnostics in warnings.
 - Backend exposes `/api/diarization/readiness` with pyannote enabled/model/device, HF token presence, required gated models, cache dir, cache writability, and ready status.
 - Hugging Face cache is pinned under project data (`backend/data/huggingface`) to avoid broken user-profile cache/ACL behavior on Windows.
@@ -356,3 +361,24 @@ python -m pip show nvidia-cublas-cu12 nvidia-cudnn-cu12
 - Для каждого провайдера можно переопределить модель и base URL через env вида `OPENAI_TEXT_POLISH_MODEL`, `DEEPSEEK_TEXT_POLISH_MODEL`, `QWEN_TEXT_POLISH_MODEL`, `GROK_TEXT_POLISH_MODEL`, `GIGACHAT_TEXT_POLISH_MODEL`, `YANDEXGPT_TEXT_POLISH_MODEL`, `*_BASE_URL`.
 - Облачный text polish должен исправлять орфографию, пунктуацию, регистр, русские/английские слова и аббревиатуры, но не пересказывать, не сокращать, не добавлять факты и не менять смысл. Порядок сегментов, таймкоды и спикеры сохраняются.
 - Для точного разделения по голосам в будущем нужна отдельная diarization-модель и отдельное решение по зависимости/скорости/качеству.
+
+## Runtime contract for ASR modes and logs
+
+- `fast` is the ASR-only draft-speed mode. `balanced` is the medium bounded text-analysis mode: ASR plus cleanup, transcript structuring, and lightweight speaker-structure heuristics without full pyannote diarization. If full speaker fidelity is required, use `accurate`.
+- `accurate` is the only default mode allowed to run full acoustic speaker diarization, and its ETA must be calibrated separately from draft modes.
+- Historical completed jobs with full diarization timings must not calibrate draft-mode ETA.
+- Every processing job must have its own downloadable `job.log`, available while the job is running and after success/failure/cancel.
+- Production processing jobs should run in isolated subprocess workers so cancel can terminate the worker process tree.
+- Processing UI must block file and quality selection while a job is active, hide deletion for the active item, require confirmation for destructive deletion, and avoid blinking/pulsing status indicators.
+
+## Recognition mode contract
+
+- Modes are separate pipelines, not module toggles.
+- `fast`: `diarization_mode=none`, ASR only, no pyannote, no heavy speaker pipeline.
+- `balanced`: `actual_pipeline=balanced_text_analysis`, `diarization_mode=lightweight`, conservative audio preprocessing, no full pyannote, no hidden maximum fallback. With a configured text-polish provider it should behave like the old medium path: ASR plus analysis/structuring/polish for long recordings. Without a provider it must explicitly fall back to the faster local cleanup path and estimate that path honestly.
+- `balanced` should be visibly stronger than `fast`: it keeps glossary prompt/hotwords, word timestamps, a stronger decode configuration, text cleanup/polish, transcript structuring, and bounded lightweight speaker segmentation. If no cloud text-polish provider is configured, fallback to local rules must be explicit in diagnostics because quality will be closer to `fast`.
+- `fast` should remain a raw draft path: cheapest decode, no word timestamps, no glossary prompt/hotwords, no speaker segmentation beyond trivial text formatting.
+- `accurate`: `diarization_mode=full`, full acoustic diarization is allowed and expected to be slower.
+- Each job must expose diagnostics with `selected_mode`, `actual_pipeline`, `fallback_used`, `fallback_reason`, `speaker_separation_status`, `time_budget`, and `elapsed_time`.
+- If a bounded pipeline cannot complete its optional speaker/text-analysis work, it must finish with an explicit fallback instead of drifting into a slower mode.
+- UI must not present a static time budget as ETA. ETA is derived from selected pipeline, available provider path, hardware/profile, and calibration from matching completed jobs.

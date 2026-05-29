@@ -77,7 +77,7 @@ def test_build_readable_error_mentions_cuda_fallback_and_log_path():
     assert "CUDA float16" in error
     assert "CUDA int8_float16" in error
     assert "CPU int8" in error
-    assert "backend/data/logs/backend.log" in error
+    assert "job.log" in error
 
 
 def test_faster_whisper_uses_quality_hints_and_word_timestamps(monkeypatch):
@@ -224,7 +224,7 @@ def test_faster_whisper_reports_diarization_failure(monkeypatch):
         diarization_engine=BrokenDiarization(),
     )
 
-    result = engine.transcribe(Path("input.wav"))
+    result = engine.transcribe(Path("input.wav"), asr_quality="accurate")
 
     assert result.diarization_status == "failed"
     assert result.speaker_count >= 1
@@ -264,9 +264,122 @@ def test_faster_whisper_passes_expected_speaker_count_to_diarization(monkeypatch
         diarization_engine=CapturingDiarization(),
     )
 
-    engine.transcribe(Path("input.wav"), expected_speakers=3)
+    engine.transcribe(Path("input.wav"), expected_speakers=3, asr_quality="accurate")
 
     assert captured_expected_speakers == 3
+
+
+def test_fast_mode_can_skip_diarization(monkeypatch):
+    diarization_called = False
+
+    class FakeWhisperModel:
+        def __init__(self, model_name: str, device: str, compute_type: str) -> None:
+            pass
+
+        def transcribe(self, audio_path: str, **kwargs):
+            return [SimpleNamespace(start=0.0, end=1.0, text="fast draft")], None
+
+    class CapturingDiarization:
+        def diarize(self, audio_path: Path, expected_speakers: int | None = None):
+            nonlocal diarization_called
+            diarization_called = True
+            return []
+
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "faster_whisper",
+        SimpleNamespace(WhisperModel=FakeWhisperModel),
+    )
+
+    engine = FasterWhisperEngine(
+        model_name="large-v3-turbo",
+        device="cuda",
+        compute_type="float16",
+        fallback_compute_type="int8_float16",
+        diarization_engine=CapturingDiarization(),
+    )
+
+    result = engine.transcribe(Path("input.wav"), asr_quality="fast", run_diarization=False)
+
+    assert diarization_called is False
+    assert result.diarization_status == "disabled"
+    assert any("skipped by fast ASR mode" in warning for warning in result.warnings)
+
+
+def test_balanced_mode_can_skip_diarization(monkeypatch):
+    diarization_called = False
+
+    class FakeWhisperModel:
+        def __init__(self, model_name: str, device: str, compute_type: str) -> None:
+            pass
+
+        def transcribe(self, audio_path: str, **kwargs):
+            return [SimpleNamespace(start=0.0, end=1.0, text="balanced draft")], None
+
+    class CapturingDiarization:
+        def diarize(self, audio_path: Path, expected_speakers: int | None = None):
+            nonlocal diarization_called
+            diarization_called = True
+            return []
+
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "faster_whisper",
+        SimpleNamespace(WhisperModel=FakeWhisperModel),
+    )
+
+    engine = FasterWhisperEngine(
+        model_name="large-v3-turbo",
+        device="cuda",
+        compute_type="float16",
+        fallback_compute_type="int8_float16",
+        diarization_engine=CapturingDiarization(),
+    )
+
+    result = engine.transcribe(Path("input.wav"), asr_quality="balanced", run_diarization=False)
+
+    assert diarization_called is False
+    assert result.diarization_status == "lightweight"
+    assert diarization_called is False
+    assert result.raw_speaker_count >= 1
+    assert any("Lightweight speaker separation" in warning for warning in result.warnings)
+
+
+def test_balanced_mode_cannot_run_full_diarization_even_if_caller_requests_it(monkeypatch):
+    diarization_called = False
+
+    class FakeWhisperModel:
+        def __init__(self, model_name: str, device: str, compute_type: str) -> None:
+            pass
+
+        def transcribe(self, audio_path: str, **kwargs):
+            return [SimpleNamespace(start=0.0, end=1.0, text="balanced draft")], None
+
+    class CapturingDiarization:
+        def diarize(self, audio_path: Path, expected_speakers: int | None = None):
+            nonlocal diarization_called
+            diarization_called = True
+            return []
+
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "faster_whisper",
+        SimpleNamespace(WhisperModel=FakeWhisperModel),
+    )
+
+    engine = FasterWhisperEngine(
+        model_name="test-model",
+        device="cuda",
+        compute_type="float16",
+        fallback_compute_type="int8_float16",
+        diarization_engine=CapturingDiarization(),
+    )
+
+    result = engine.transcribe(Path("input.wav"), asr_quality="balanced", run_diarization=True)
+
+    assert diarization_called is False
+    assert result.diarization_status == "lightweight"
+    assert any("Lightweight speaker separation" in warning for warning in result.warnings)
 
 
 def test_accurate_asr_falls_back_to_default_model_when_large_model_unavailable(monkeypatch):
