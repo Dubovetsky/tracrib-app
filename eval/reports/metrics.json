@@ -1,0 +1,96 @@
+[
+  {
+    "sample": "sample_01",
+    "hypothesis": "backend\\data\\results\\60f7742e-27db-4f47-a285-e66670e751f8\\transcript.txt",
+    "reference_ready": false,
+    "speaker_reference_ready": false,
+    "wer": null,
+    "cer": null,
+    "chars": 32395,
+    "words": 5463,
+    "speaker_labels": {
+      "Спикер 1": 24,
+      "Как": 1,
+      "Спикер 2": 22,
+      "Pmi": 1,
+      "Из": 1
+    },
+    "speaker_label_count": 5,
+    "speaker_turns": 49,
+    "expected_speakers": null,
+    "suspicious_labels": [
+      "Pmi",
+      "Из",
+      "Как"
+    ],
+    "term_hits": {
+      "EADR": 0,
+      "ADR": 0,
+      "IDR": 0,
+      "DR": 0,
+      "RFC": 0,
+      "Jira": 0,
+      "AirPoint": 0,
+      "GSM": 0,
+      "CM": 0,
+      "TMH": 0,
+      "QA": 0,
+      "API": 0,
+      "UI": 0,
+      "UX": 0,
+      "MVP": 0,
+      "CI/CD": 0
+    },
+    "suspect_term_hits": {
+      "Жира": 1
+    },
+    "repeated_lines": []
+  },
+  {
+    "sample": "sample_02",
+    "hypothesis": "backend\\data\\results\\26a41da7-4a8e-472a-8f85-6fb721560e91\\transcript.txt",
+    "reference_ready": false,
+    "speaker_reference_ready": false,
+    "wer": null,
+    "cer": null,
+    "chars": 15428,
+    "words": 2646,
+    "speaker_labels": {
+      "Спикер 1": 11,
+      "Спикер 2": 10,
+      "По": 2,
+      "Кто": 1,
+      "Какая": 1
+    },
+    "speaker_label_count": 5,
+    "speaker_turns": 25,
+    "expected_speakers": null,
+    "suspicious_labels": [
+      "Какая",
+      "Кто",
+      "По"
+    ],
+    "term_hits": {
+      "EADR": 0,
+      "ADR": 0,
+      "IDR": 0,
+      "DR": 0,
+      "RFC": 0,
+      "Jira": 6,
+      "AirPoint": 1,
+      "GSM": 9,
+      "CM": 1,
+      "TMH": 0,
+      "QA": 3,
+      "API": 0,
+      "UI": 0,
+      "UX": 0,
+      "MVP": 0,
+      "CI/CD": 0
+    },
+    "suspect_term_hits": {
+      "Эрпоинт": 4
+    },
+    "repeated_lines": []
+  }
+]

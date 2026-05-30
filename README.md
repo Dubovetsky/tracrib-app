@@ -1,12 +1,21 @@
 # Transcrib App
 
+## ASR quality notes
+
+- faster-whisper uses `word_timestamps=True`, `condition_on_previous_text=False`, `initial_prompt`, and `hotwords` to reduce long-context hallucinations and improve domain terms such as `EADR`, `ADR`, `IDR`, `RFC`, `Jira`, `AirPoint`, `GSM`, and `QA`.
+- With diarization enabled, word timestamps are used to split one ASR segment into multiple speaker turns when pyannote detects a speaker change inside that segment. Segment-level maximum overlap is now only a fallback when words are unavailable.
+- The raw transcript path is verbatim-first: `PRESERVE_ASR_WORDS=1`. The UI and TXT download show the improved transcript; use RAW when you need the untouched ASR words before speaker assignment and text polish.
+- Each completed job stores raw ASR text before diarization/postprocessing: `raw_asr.txt`. Use the RAW download in the UI to separate ASR model errors from speaker-assignment or formatting errors.
+- `WHISPER_INITIAL_PROMPT` and `WHISPER_HOTWORDS` can be overridden per deployment; keep them short and domain-specific.
+- pyannote diarization requires accepted Hugging Face access for both `pyannote/speaker-diarization-3.1` and its gated dependency `pyannote/segmentation-3.0`.
+
 Локальный web-сервис для транскрибации аудио в текст на Windows 11 с NVIDIA GPU. ASR работает локально через faster-whisper; опциональная diarization-модель может разделять реплики по голосам; опциональная облачная постобработка может исправлять текст, слова и IT/Agile-аббревиатуры с fallback на локальные правила. MVP не делает real-time транскрибацию.
 
 ## Стек
 
 - Backend: Python, FastAPI, SQLite
 - ASR: faster-whisper, модель `large-v3-turbo`
-- GPU: CUDA, `float16` с fallback на `int8_float16`
+- GPU: CUDA `float16` с fallback на CUDA `int8_float16`, затем CPU `int8`
 - Audio preprocessing: ffmpeg, mono 16 kHz WAV
 - Frontend: React + Vite
 - Storage: локальная папка `backend/data`
@@ -69,16 +78,32 @@ $env:TRANSCRIB_APP_DATA_DIR="D:\transcrib-data"
 Полезные переменные:
 
 ```powershell
+$env:HF_HUB_OFFLINE="1"
+$env:HF_HUB_DISABLE_XET="1"
 $env:WHISPER_MODEL="large-v3-turbo"
 $env:WHISPER_DEVICE="cuda"
 $env:WHISPER_COMPUTE_TYPE="float16"
 $env:WHISPER_FALLBACK_COMPUTE_TYPE="int8_float16"
+$env:WHISPER_INITIAL_PROMPT="Встреча на русском языке. Термины: EADR, ADR, IDR, RFC, Jira, AirPoint, GSM, QA."
+$env:WHISPER_HOTWORDS="EADR ADR IDR RFC Jira AirPoint GSM QA"
+$env:PRESERVE_ASR_WORDS="1"
+$env:TEXT_POLISH_PROVIDER="off"
+$env:DIARIZATION_ENABLED="1"
+$env:DIARIZATION_MIN_SPEAKERS="2"
+$env:DIARIZATION_MAX_SPEAKERS="4"
 ```
+
+Backend автоматически добавляет Windows CUDA DLL directories из Python packages `nvidia-cublas-cu12` и `nvidia-cudnn-cu12` перед импортом faster-whisper. Если CUDA runtime всё равно недоступен, загрузка модели идёт по цепочке:
+
+1. CUDA `float16`.
+2. CUDA `int8_float16`.
+3. CPU `int8`.
+
+Если все режимы не сработали, job завершится понятной ошибкой в UI, а полный traceback будет записан в `backend/data/logs/backend.log`.
 
 Опциональная diarization по голосам:
 
 ```powershell
-pip install -r requirements-diarization.txt
 $env:DIARIZATION_ENABLED="1"
 $env:DIARIZATION_MODEL="pyannote/speaker-diarization-3.1"
 $env:DIARIZATION_DEVICE="cuda"
@@ -86,6 +111,10 @@ $env:DIARIZATION_MIN_SPEAKERS="2"
 $env:DIARIZATION_MAX_SPEAKERS="4"
 $env:HF_TOKEN="..."
 ```
+
+Сейчас это не optional path: `pyannote.audio` входит в основной `requirements.txt`, а `DIARIZATION_ENABLED`, `DIARIZATION_MIN_SPEAKERS` и `DIARIZATION_MAX_SPEAKERS` имеют дефолты `1`, `2`, `4`. `requirements-diarization.txt` оставлен только для старых инструкций.
+
+Для качества diarization важно: faster-whisper запускается с `word_timestamps=True`, поэтому при включенной diarization длинный ASR-сегмент может быть разрезан на несколько реплик по словам и голосовым интервалам pyannote. Старый режим "один speaker label на весь ASR-сегмент по максимальному overlap" оставлен только как fallback, если word timestamps недоступны.
 
 `pyannote/speaker-diarization-3.1` может требовать Hugging Face token и принятие условий модели на Hugging Face. Если diarization выключена или модель недоступна, задача продолжает работать со старой локальной текстовой разметкой спикеров.
 
@@ -134,9 +163,8 @@ npm run dev
 - `GET /api/jobs` - история задач.
 - `GET /api/jobs/{job_id}` - статус задачи.
 - `GET /api/jobs/{job_id}/result` - текст результата.
-- `GET /api/jobs/{job_id}/download/txt` - скачать TXT.
-- `GET /api/jobs/{job_id}/download/srt` - скачать SRT.
-- `GET /api/jobs/{job_id}/download/vtt` - скачать VTT.
+- `GET /api/jobs/{job_id}/download/txt` - скачать улучшенный TXT.
+- `GET /api/jobs/{job_id}/download/raw-txt` - скачать чистый raw ASR TXT до post-processing.
 
 ## Обработка
 
@@ -151,6 +179,29 @@ npm run dev
 9. SQLite хранит историю, статусы и ошибки.
 
 Если приложение перезапущено, задачи `queued` возвращаются в очередь. Задачи, прерванные во время `processing`, помечаются как `failed`, чтобы не зависать навсегда.
+
+## Быстрая проверка MVP
+
+```powershell
+ffmpeg -version
+python -m pip show nvidia-cublas-cu12 nvidia-cudnn-cu12 faster-whisper ctranslate2
+python -m py_compile backend\app\audio.py backend\app\services.py backend\app\settings.py backend\app\transcriber.py
+python -m pytest tests
+Invoke-RestMethod -Uri http://127.0.0.1:8000/api/health
+```
+
+Для локального запуска backend без облачной правки и без diarization:
+
+```powershell
+$env:HF_HUB_OFFLINE="1"
+$env:HF_HUB_DISABLE_XET="1"
+$env:PRESERVE_ASR_WORDS="1"
+$env:TEXT_POLISH_PROVIDER="off"
+$env:DIARIZATION_ENABLED="0"
+python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000
+```
+
+`DIARIZATION_ENABLED=0` is an emergency degraded mode without acoustic speaker separation. Do not use it for normal meeting transcription quality.
 
 ## Тесты
 

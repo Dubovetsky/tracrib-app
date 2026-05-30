@@ -1,5 +1,6 @@
 from backend.app.text_polish import (
     TextPolishConfig,
+    apply_segment_replacements,
     build_provider_chain,
     parse_polish_replacements,
     polish_transcript,
@@ -91,3 +92,22 @@ def test_parse_polish_replacements_accepts_markdown_json_block():
     )
 
     assert replacements == {0: "Нужен API."}
+
+
+def test_cloud_replacement_can_update_speaker_without_rewriting_text():
+    segments = [{"start": 0.0, "end": 1.0, "speaker": "Спикер 1", "text": "Карина, проверь API."}]
+    replacements = {0: {"speaker": "Карина", "text": "Карина, проверь API."}}
+
+    polished = apply_segment_replacements(segments, replacements)
+
+    assert polished[0]["speaker"] == "Карина"
+    assert polished[0]["text"] == "Карина, проверь API."
+
+
+def test_cloud_replacement_rejects_text_rewrite():
+    segments = [{"start": 0.0, "end": 1.0, "speaker": "Спикер 1", "text": "Нужно проверить API."}]
+    replacements = {0: {"speaker": "Спикер 1", "text": "Нужно срочно проверить API и подготовить отчет."}}
+
+    polished = apply_segment_replacements(segments, replacements)
+
+    assert polished[0]["text"] == "Нужно проверить API."

@@ -1,5 +1,222 @@
 # Chat History
 
+## Session 13: fix fast-mode SLA, early RAW artifact, and cancellable diagnostics
+
+Date: 2026-05-21
+
+Request: investigate why the UI countdown finishes but processing continues for a selected recognition quality, why quality choices appear not to change the real backend path, why fast mode takes far too long, and why logs/RAW are unavailable after cancellation or failure.
+
+Diagnosis:
+
+- The quality selector was not a complete pipeline selector. `fast` only changed faster-whisper decode options, but still ran the same expensive post-ASR pipeline shape, including acoustic diarization when configured.
+- `raw_asr.txt` was generated only after `FasterWhisperEngine.transcribe()` returned, which means after diarization and postprocessing. For a long ASR/diarization run, users had no early raw artifact.
+- The latest real `fast` job for `Моя запись 60.m4a` stayed in `asr` for about 55 minutes and was cancelled with no RAW artifact. The job DB had `raw_text_path=null`, so the user could not inspect partial ASR output.
+- Previous completed jobs showed pyannote as the dominant runtime cost: one 85-minute recording spent about 13 seconds in ASR but about 3154 seconds in diarization. Treating fast mode as a full diarization path is therefore a broken promise.
+
+Changes:
+
+- `fast` mode is now an ASR-only draft path: skips acoustic diarization and disables text polish for that job.
+- `FasterWhisperEngine.transcribe()` now accepts `run_diarization` and `raw_asr_callback`.
+- Backend writes `raw_asr.txt` immediately after ASR segments are produced and updates `raw_text_path` while the job is still processing.
+- `/api/jobs/{job_id}/download/raw-txt` can now return RAW while a job is processing, and still falls back for completed legacy jobs.
+- Added `/api/jobs/{job_id}/download/logs` for failed/cancelled diagnostics.
+- ASR status now reports/logs actual `model`, `device`, and `compute`, so CPU fallback or wrong model path is visible during processing.
+- Fast-mode ETA baseline changed to reflect ASR-only draft behavior.
+- Frontend shows RAW download as soon as `raw_text_path` exists and shows LOGS for failed jobs.
+
+Checks:
+
+```powershell
+python -m py_compile backend\app\transcriber.py backend\app\services.py backend\app\main.py backend\app\performance.py
+python -m pytest tests
+npm.cmd run build
+```
+
+Result:
+
+```text
+66 passed
+frontend build passed
+```
+
+Follow-up:
+
+- Implemented hard cancellation with isolated per-job worker subprocesses. The parent backend tracks the worker PID and terminates the process tree on cancellation; on Windows this uses `taskkill /T /F`, so child processes such as ffmpeg are killed too.
+- Added per-file logs at `backend/data/results/{job_id}/job.log`; `/api/jobs/{job_id}/download/logs` now serves the job-specific log during processing and after success/failure.
+- Upload file selection, submit, and recognition-quality selection are disabled while any job is queued or processing.
+- The delete cross is hidden for queued/processing jobs.
+- History deletion now requires an explicit irreversible-delete confirmation overlay on the row.
+- Progress now shows current stage, percent, elapsed time, planned total, and remaining estimate instead of behaving like a fake countdown.
+- Diagnosed balanced mode regression: the completed job `362d881d-7bba-43ea-a31f-2011c6ff1c5a` spent `58.6s` in ASR and `3913s` in pyannote diarization. Balanced was therefore effectively paying maximum-mode speaker-analysis cost.
+- Balanced mode is now a draft-plus-cleanup mode without full pyannote diarization. Full acoustic speaker diarization is reserved for `accurate` / maximum mode.
+- Fast and balanced draft runs no longer calibrate maximum ETA; ASR-only samples cannot poison full diarization estimates.
+- Transcript display hides the text caret so the result panel does not look like an editable input cursor.
+
+Known limitation:
+
+- Fast and balanced modes intentionally sacrifice acoustic speaker fidelity. Correct "who spoke when" requires maximum mode with full diarization, or a future faster diarization implementation.
+
+## Session 12: remove subtitle/JSON exports and stop fake speaker alternation
+
+Date: 2026-05-21
+
+Request: remove SRT/VTT/JSON outputs, keep separate RAW, show improved text in the app and TXT download, and fix the main quality defect: speaker assignment looked random even when raw ASR words were acceptable.
+
+Changes:
+
+- Removed product SRT, VTT, JSON, raw-segments, diarization-turns, and diagnostics download endpoints from the current API surface.
+- Export now writes only `transcript.txt`; raw storage writes only `raw_asr.txt`.
+- Frontend completed-job actions now show only TXT and RAW.
+- Text-only postprocessing no longer alternates unknown speakers by question/answer heuristics by default. Without acoustic diarization or explicit safe speaker labels, it keeps one numbered speaker instead of inventing a speaker structure.
+- Updated tests and docs for the current product contract: improved TXT plus separate raw ASR TXT.
+
+Production note:
+
+- This fixes false confidence, not speaker diarization accuracy by itself. Correct "who said each word" still depends on working acoustic diarization with expected speaker count and word-level ASR timestamps.
+
+Follow-up:
+
+- Added production-quality upload controls: required `expected_speakers`, `asr_quality`, `audio_profile`, participant names, and custom vocabulary.
+- Added `/api/diarization/readiness` so missing HF token / cache problems are visible before a job is trusted.
+- Pinned Hugging Face cache to `backend/data/huggingface` and added a writable-cache check to avoid Windows user-profile ACL failures.
+- Added speech audio preprocessing profile with high-pass, low-pass, and loudness normalization, plus preprocess diagnostics in job warnings.
+- Accurate ASR mode now prefers full `large-v3`; if that model is unavailable, the backend falls back to the default model and records an explicit warning instead of silently failing.
+- Diarization now records a summary of acoustic speaker clusters, turn count, unassigned words, and speaker switches inside ASR segments.
+
+## Session 11: verbatim-first transcript accuracy and Windows pytest ACL fix
+
+Date: 2026-05-21
+
+Request: review the project as an ASR/diarization production engineer, fix backend/quality issues, and finally fix the Windows ACL pytest failure. User also clarified that recent output had strong text distortion and the priority is maximum accuracy: every spoken word should remain as close as possible to ASR output and be assigned to the correct speaker.
+
+Changes:
+
+- Added `pytest.ini` so `python -m pytest tests` ignores ACL-poisoned cache/temp directories under `tests/` and disables pytest cache provider by default.
+- Added root `conftest.py` with a project-local `tmp_path` fixture, avoiding broken Windows `%TEMP%` / pytest cache folders that caused `PermissionError: [WinError 5]`.
+- Fixed the API smoke fake transcriber signature to match the production transcriber contract with `expected_speakers`.
+- Changed production transcript defaults to verbatim-first: `PRESERVE_ASR_WORDS=1` and `TEXT_POLISH_PROVIDER=off`.
+- `FasterWhisperEngine` now passes `preserve_asr_words` into postprocessing, so the default backend path does not rewrite ASR words into normalized domain terms.
+- `postprocess_transcript(..., preserve_words=True)` still assigns speaker labels and can detect explicit speaker names, but it does not rewrite segment text or strip explicit labels from the displayed words.
+- Added a regression test proving verbatim output can preserve words such as spoken `эй пи ай` instead of silently normalizing them to `API`.
+- Updated README and project prompt to state that hidden LLM/local rewriting is a transcription quality defect unless explicitly enabled as a cleaned/polished path.
+
+Checks:
+
+```powershell
+python -m pytest tests
+npm.cmd run build
+```
+
+Result:
+
+```text
+45 passed
+frontend build passed
+```
+
+Known limitations:
+
+- This does not prove WER/CER or diarization accuracy on real audio; that still requires reference transcripts and speaker annotations.
+- FastAPI still emits `on_event` deprecation warnings; migrate to lifespan later.
+- For maximum speaker fidelity, users should provide expected speaker count before upload. Participant-name mapping should be a future explicit UI metadata field, not guessed from text.
+
+Follow-up in the same session:
+
+- Added immutable raw ASR artifacts for every completed job: `raw_asr.txt` and `raw_asr_segments.json`, written immediately after faster-whisper and before diarization/postprocessing.
+- Added backend download endpoints `/api/jobs/{job_id}/download/raw-txt` and `/api/jobs/{job_id}/download/raw-segments`.
+- Added RAW download in the frontend completed-job actions.
+- SQLite now migrates `raw_text_path` and `raw_segments_json_path`.
+- Smoke test now verifies raw TXT and raw segments downloads.
+
+## Session 10: backend stabilization, ASR operability metadata, and speaker-label guardrails
+
+Date: 2026-05-21
+
+Request: stabilize the backend and improve ASR quality using `docs/project-prompt.md`, `docs/chat-history.md`, and the previous evaluation findings. Main production risk: bad speaker structure can look confident, especially when text postprocessing turns garbage prefixes into speaker labels.
+
+Changes:
+
+- Added SQLite job metadata columns with migration-on-start: `diarization_status`, `speaker_count`, `warnings_json`, and `timings_json`.
+- `FasterWhisperEngine.transcribe()` now returns `TranscriptionResult` with text, segments, diarization status, speaker count, warnings, and timings while preserving old tuple unpack compatibility.
+- Job processing now records timings for preprocess, ASR, diarization, text polish, export, and total job time where available.
+- Job API responses now expose parsed `warnings` and `timings` instead of hiding JSON strings.
+- UI now shows compact diagnostics for completed jobs: diarization status, speaker count, total time, ASR time, diarization time, and warning count.
+- Upload flow now accepts an expected speaker count. For a known 3-speaker recording, the backend passes `num_speakers=3` into pyannote rather than relying on auto-detection between min/max bounds.
+- Text-only speaker extraction now rejects obvious garbage labels such as `По:`, `Кто:`, and `Pmi:` so they remain transcript text instead of becoming false speaker names.
+- Added an HTTP smoke test covering upload, polling completion, `/result`, and TXT/SRT/VTT downloads with fake ASR/preprocess.
+- Added regression coverage for diarization failure visibility and persisted operability metadata.
+
+Checks:
+
+```powershell
+python -m py_compile backend\app\db.py backend\app\services.py backend\app\transcriber.py backend\app\postprocess.py
+python -m pytest tests -p no:cacheprovider --basetemp=backend\data\pytest-tmp-full-stabilize3
+npm.cmd run build
+```
+
+Result:
+
+```text
+py_compile passed
+40 passed
+frontend build passed
+```
+
+Known limitations:
+
+- Full pytest still needs to run outside the Codex sandbox on this Windows host because pytest temp/cache cleanup can hit `PermissionError: [WinError 5]`.
+- The test run emits FastAPI `on_event` deprecation warnings; migrate to lifespan handlers in a later infra cleanup.
+- These changes improve honesty and operability of ASR/diarization results, but WER/CER still require human reference transcripts.
+
+## Сессия 9: стабилизация ASR и diarization mapping
+
+Дата: 2026-05-20
+
+Запрос: пользователь указал на плохое разделение спикеров, смешивание реплик разных людей, слабое определение количества голосов, ошибки по доменным аббревиатурам вроде `EADR`, и попросил найти максимально простое решение в условиях почти исчерпанного лимита разработки.
+
+Сделано:
+
+- В `backend/app/transcriber.py` faster-whisper теперь запускается с `word_timestamps=True`, `condition_on_previous_text=False`, `initial_prompt` и `hotwords`.
+- В `backend/app/settings.py` добавлены `WHISPER_INITIAL_PROMPT`, `WHISPER_HOTWORDS` и дефолтный ASR glossary с `EADR`, `ADR`, `IDR`, `DR`, `RFC`, `Jira`, `AirPoint`, `GSM`, `CM`, `TMH`, `QA` и частыми IT/Agile терминами.
+- В `backend/app/diarization.py` исправлен главный failure mode: если один ASR-сегмент содержит слова нескольких спикеров, он режется по word timestamps и pyannote speaker turns. Старый maximum-overlap на весь сегмент оставлен только fallback.
+- В `backend/app/transcriber.py` ошибки diarization больше не проглатываются молча: они логируются через backend logger, но job не падает.
+- В `backend/app/exports.py` `TranscriptSegment` расширен optional `words`, чтобы word-level данные доходили до diarization layer.
+- В `tests/test_diarization.py` добавлен регрессионный тест на split одного ASR-сегмента на две реплики по словам.
+- В `tests/test_transcriber_fallback.py` добавлен тест, что transcriber реально передает `word_timestamps`, `condition_on_previous_text`, `initial_prompt`, `hotwords`.
+- README и `docs/project-prompt.md` дополнены правилами ASR quality path.
+- После уточнения пользователя исправлен недоделанный дефолт: diarization больше не ручной optional flag. `DIARIZATION_ENABLED` по умолчанию `1`, `DIARIZATION_MIN_SPEAKERS=2`, `DIARIZATION_MAX_SPEAKERS=4`, а `pyannote.audio` перенесен в основной `requirements.txt`.
+
+Проверки:
+
+```powershell
+python -m py_compile backend\app\exports.py backend\app\settings.py backend\app\transcriber.py backend\app\services.py backend\app\diarization.py
+python -m pytest tests\test_diarization.py tests\test_transcriber_fallback.py tests\test_postprocess.py tests\test_text_polish.py -p no:cacheprovider
+python -m pytest tests\test_db.py tests\test_exports.py tests\test_postprocess.py tests\test_text_polish.py tests\test_diarization.py tests\test_transcriber_fallback.py -p no:cacheprovider
+```
+
+Результат:
+
+```text
+py_compile passed
+29 passed
+34 passed
+```
+
+Ограничения:
+
+- Реальный pyannote-прогон на новых настройках в этой сессии не выполнялся; для него нужны установленный `requirements-diarization.txt`, `DIARIZATION_ENABLED=1`, `HF_TOKEN` и доступ к модели.
+- Команда `pytest tests` без явного списка файлов падает из-за мусорных ACL-закрытых каталогов `tests/pytest-cache-files-*`; это отдельный infra-долг, а не регрессия ASR.
+- Текстовый слой не может надежно определить имена людей из воздуха; имена появляются только из явных фраз/контекста. Для устойчивого name mapping нужен отдельный metadata/UI layer со списком участников встречи.
+
+Дополнение по настройке Hugging Face:
+
+- Пользователь предоставил HF token; токен сохранен в пользовательскую переменную окружения Windows `HF_TOKEN`, сам токен в репозиторий не записывался.
+- Также сохранены пользовательские env: `DIARIZATION_ENABLED=1`, `DIARIZATION_MIN_SPEAKERS=2`, `DIARIZATION_MAX_SPEAKERS=4`, `HF_HOME=backend/data/huggingface`, `HUGGINGFACE_HUB_CACHE=backend/data/huggingface/hub`, `HF_HUB_DISABLE_XET=1`.
+- Проверка `HfApi.whoami` прошла, аккаунт распознан; доступ к `pyannote/speaker-diarization-3.1` подтвержден.
+- Реальная загрузка pipeline вне sandbox дошла до gated dependency `pyannote/segmentation-3.0` и получила `403`; нужно принять условия доступа на странице `https://huggingface.co/pyannote/segmentation-3.0`.
+- Добавлен `backend/app/hf_env.py`, который удаляет мертвый proxy `127.0.0.1:9` перед Hugging Face вызовами.
+- `PyannoteDiarizationEngine.diarize()` теперь загружает WAV через `torchaudio.load()` и передает pyannote preloaded waveform, чтобы не зависеть от сломанного `torchcodec` decoder path.
+
 Дата: 2026-05-20
 
 Этот файл фиксирует рабочую историю проекта локального web-сервиса для транскрибации аудио в текст. Он нужен как контекст для следующих сессий разработки: что было сделано, какие решения приняты, какие проверки прошли и какие проблемы уже встречались.
@@ -700,3 +917,261 @@ full explicit test set outside sandbox: 29 passed
 
 - Реальный pyannote-прогон не выполнялся в этой сессии: для него нужно установить optional dependency и, вероятно, указать Hugging Face token с доступом к модели.
 - Первый полный pytest внутри sandbox снова уперся в известный Windows ACL `PermissionError: [WinError 5]` на pytest temp cleanup, но повторный полный прогон вне sandbox прошел успешно.
+
+## Сессия 8: срочный hotfix CUDA fallback и проверка `.m4a` до TXT
+
+Дата: 2026-05-20
+
+Пользователь сообщил, что в UI при транскрибации `.m4a` получил ошибку:
+
+```text
+Library cublas64_12.dll is not found or cannot be loaded
+```
+
+Цель: срочно довести локальный MVP до рабочего состояния без изменения архитектуры, EXE, SaaS или redesign.
+
+Сделано:
+
+- Исправлен порядок инициализации CUDA DLL directories в `backend/app/transcriber.py`: теперь `nvidia/cublas/bin` и `nvidia/cudnn/bin` добавляются до импорта `faster_whisper.WhisperModel`.
+- Для Windows дополнительно обновляется `PATH` текущего процесса на найденные CUDA/cuDNN DLL directories.
+- Добавлена устойчивая цепочка загрузки модели:
+  - CUDA `float16`;
+  - CUDA `int8_float16`;
+  - CPU `int8`.
+- Если все режимы загрузки модели не сработали, backend формирует readable error с перечислением проверенных режимов.
+- В `backend/app/services.py` добавлен file logging в `backend/data/logs/backend.log`; при падении job туда пишется полный traceback.
+- В `backend/app/audio.py` ошибки ffmpeg теперь превращаются в понятные сообщения: ffmpeg не найден или ffmpeg не смог подготовить аудио.
+- Добавлены регрессионные тесты `tests/test_transcriber_fallback.py`.
+- README и `docs/project-prompt.md` обновлены командами запуска/проверки и описанием fallback.
+
+Проверки:
+
+```powershell
+ffmpeg -version
+python -m pip show nvidia-cublas-cu12 nvidia-cudnn-cu12 faster-whisper ctranslate2
+python -m py_compile backend\app\audio.py backend\app\services.py backend\app\settings.py backend\app\transcriber.py tests\test_transcriber_fallback.py
+python -m pytest tests\test_db.py tests\test_exports.py tests\test_postprocess.py tests\test_text_polish.py tests\test_diarization.py tests\test_transcriber_fallback.py -p no:cacheprovider --basetemp=backend\data\pytest-tmp-fallback-full
+```
+
+Результат:
+
+```text
+ffmpeg available
+nvidia-cublas-cu12 12.9.2.10
+nvidia-cudnn-cu12 9.22.0.52
+faster-whisper 1.2.1
+ctranslate2 4.7.1
+py_compile passed
+32 passed
+```
+
+Реальная проверка загрузки модели:
+
+```text
+cuda dll dirs added
+faster_whisper import ok
+cuda float16 model load ok
+```
+
+Реальная проверка `.m4a`:
+
+- Источник: `backend/data/uploads/7a99472e-0341-491b-ad7b-b8165284b6dd.m4a`, размер `127042990` bytes.
+- Проверка выполнена через FastAPI TestClient как upload flow.
+- Job: `bc723b6a-e300-4177-8576-c7ab6ed65da6`.
+- Статусы: `processing` -> `completed`.
+- Время до completed: около `140` секунд.
+- TXT chars: `57091`.
+- TXT path: `backend/data/results/bc723b6a-e300-4177-8576-c7ab6ed65da6/transcript.txt`.
+- `/api/jobs/{job_id}/result`: `200`, `57091` chars.
+- `/api/jobs/{job_id}/download/txt`: `200`, `101109` bytes.
+
+Backend перезапущен на `127.0.0.1:8000` с локальными env:
+
+```powershell
+HF_HUB_OFFLINE=1
+HF_HUB_DISABLE_XET=1
+TEXT_POLISH_PROVIDER=local
+DIARIZATION_ENABLED=0
+```
+
+Health check:
+
+```text
+GET http://127.0.0.1:8000/api/health -> ok
+```
+
+## Сессия 9: stabilization ASR/diarization, UI cleanup, ETA и отмена обработки
+
+Дата: 2026-05-21
+
+Контекст:
+
+- Пользователь потребовал production-grade стабилизацию backend, ASR, diarization, raw/final transcript separation, observability, тесты и UI/UX без декоративных заглушек.
+- Критичные жалобы: raw download отдавал `Not Found`, speaker diarization выглядел случайным, LLM/словарь/имена могли загрязнять распознанный текст, ETA показывал нереалистичные значения, UI имел лишние пустые зоны и плохо читаемые блоки.
+- Отдельный blocker: pyannote требует рабочий HF token и принятый gated access к `pyannote/speaker-diarization-3.1` и `pyannote/segmentation-3.0`; token хранится локально в `backend/data/secrets/hf_token.txt` и не должен коммититься.
+
+Сделано:
+
+- Добавлено игнорирование `backend/data/secrets/`, чтобы HF token не утек в GitHub.
+- Backend получил readiness/diagnostics для diarization и HF cache, включая проверку writable cache и доступности pyannote pipeline.
+- Raw ASR сохранен как отдельный artifact `raw_asr.txt`; `/download/raw-txt` теперь умеет отдавать raw и fallback для legacy jobs.
+- Убраны ненужные пользователю export endpoints/files SRT/VTT/JSON из UI-потока; основной TXT остается финальным улучшенным текстом.
+- ASR modes приведены к пользовательским режимам: fast/balanced/accurate, в UI отображаются русские названия.
+- Audio profile убран из UI как ручная настройка; профиль выбирается автоматически по режиму ASR.
+- Добавлена оценка производительности по локальным completed jobs и baseline, чтобы ETA не схлопывался до “1 сек” в середине ASR/diarization.
+- Progress/ETA переведены на полный pipeline, а не на отдельный этап: audio preparation, ASR, diarization, text assembly, export.
+- Для ASR/diarization добавлены stage floors: ASR больше не считается концом всего процесса, diarization не показывает ложные секунды до завершения.
+- Убраны поля participants/custom vocabulary из UI, потому что они загрязняли текст и провоцировали вставку имен/терминов прямо в transcript.
+- LLM-полировка ограничена: нельзя менять порядок, смысл и слова; разрешены только speaker/name resolver и очевидная нормализация терминов.
+- Speaker count больше не обязателен в UI; pipeline допускает auto speaker count и до 20 speakers.
+- Diarization строится от акустики/pyannote, а LLM используется только как финальный resolver имен/терминов, не как “слуховая” переразметка разговора.
+- Добавлена защита от мусорных speaker labels и от повторного вбрасывания participant/custom vocabulary в текст.
+- UI переработан точечно:
+  - история получила scroll и delete button на каждой записи;
+  - колонки растянуты по высоте окна без ломания исходной компоновки;
+  - result textarea растянута вниз до доступной области;
+  - кнопки download под заголовком и статусом;
+  - статусы стали темно-красными для ошибки, зелеными для успеха, желтыми для обработки;
+  - статус выбранной job в левой колонке синхронизируется с выбранным элементом истории;
+  - блок помощи по режимам распознавания облегчен визуально;
+  - текущий статус под названием файла получил shimmer effect во время обработки;
+  - кнопка refresh оставлена, добавлен визуальный feedback.
+- Добавлена кнопка `Прервать` слева от refresh.
+- Backend получил `POST /api/jobs/{job_id}/cancel`.
+- В jobs добавлен `cancel_requested`; queued/processing job переводится в `failed/cancelled` с `Processing was cancelled by user.`
+- Worker проверяет отмену между фазами и в progress callback, чтобы отмененная job не могла потом silently стать `completed`.
+
+Важное ограничение:
+
+- Текущая отмена безопасная/cooperative. Она мгновенно меняет состояние job и останавливает pipeline на ближайшей проверке или границе фазы. Она не убивает принудительно CUDA/pyannote/faster-whisper внутри синхронного thread.
+- Для настоящего hard cancel посреди GPU/pyannote inference нужен следующий архитектурный шаг: запуск каждой job в отдельном subprocess/worker process и termination этого процесса.
+
+Проверки:
+
+```powershell
+python -m pytest tests/test_api_smoke.py
+npm run build
+```
+
+Результат:
+
+```text
+tests/test_api_smoke.py: 11 passed
+frontend build: passed
+backend restarted on 127.0.0.1:8000
+frontend running on 127.0.0.1:5173
+```
+
+## Сессия 14: hard cancel, per-job logs, balanced ASR без скрытого maximum
+
+Дата: 2026-05-22
+
+Контекст:
+
+- Пользователь показал регрессию: balanced для файла `Моя запись 60.m4a` обещал около 21 минуты, зависал визуально на 28%, а завершился примерно за 67 минут.
+- По данным job timing причина не в ASR: `asr_seconds` около 58.6 сек, `diarization_seconds` около 3913 сек. То есть balanced фактически запускал тяжелую pyannote diarization и вел себя как maximum.
+- Требования: real-time log на каждый файл, hard cancel, блокировка выбора файла/качества при активной обработке, удаление только через подтверждение, честный progress/ETA, отсутствие мигающих UI-элементов.
+
+Сделано:
+
+- Каждая production job запускается в отдельном subprocess worker. Cancel теперь убивает дерево процесса по PID, а не только ставит cooperative flag.
+- Для каждой job создается отдельный `job.log` в каталоге результата; `/download/logs` отдает именно per-job log и доступен во время обработки и после успешного завершения.
+- RAW ASR сохраняется и доступен до окончания полной обработки, если ASR уже завершился.
+- Fast и balanced переведены в draft pipeline без full pyannote diarization. Full diarization оставлена только для accurate/maximum.
+- ETA разделяет draft pipeline и full-diarization pipeline. Старые balanced-запуски с `diarization_seconds > 60` больше не используются для калибровки нового balanced ETA, чтобы исторический дефект не портил текущую оценку.
+- UI блокирует выбор аудио и качество распознавания при активной обработке.
+- Крестик удаления скрыт у активной job; удаление history item требует явного подтверждения поверх элемента.
+- В fast/balanced из pipeline pills убран этап `Голоса`, потому что он больше не должен запускаться.
+- Убраны мигающие/pulsing/shimmer состояния и скрыт caret в transcript textarea.
+
+Проверки:
+
+```powershell
+python -m pytest tests
+npm.cmd run build
+```
+
+Результат:
+
+```text
+72 passed, 4 warnings
+frontend build passed
+```
+
+## Сессия 15: явный контракт режимов ASR pipeline
+
+Дата: 2026-05-22
+
+Контекст:
+
+- Пользователь зафиксировал правило: fast, balanced и maximum должны быть отдельными pipeline с собственными ограничениями, diagnostics и runtime, без скрытого смешивания режимов.
+- Повторный balanced-прогон показал старый production defect: `ASR` занял около минуты, а `Diarization` около 69 минут, то есть balanced снова фактически стал maximum.
+
+Сделано:
+
+- Добавлен простой `PipelinePlan` без лишней архитектуры:
+  - `fast` -> `actual_pipeline=fast_asr_only`, `diarization_mode=none`;
+  - `balanced` -> `actual_pipeline=balanced_asr_lightweight_speakers`, `diarization_mode=lightweight`, bounded budget `900s`;
+  - `accurate` -> `actual_pipeline=maximum_full_diarization`, `diarization_mode=full`.
+- В `FasterWhisperEngine` добавлен нижний предохранитель: full diarization физически запускается только для `accurate`, даже если caller ошибочно передаст `run_diarization=True` для balanced.
+- Balanced использует `conservative` audio preprocessing без тяжелого `loudnorm`.
+- В jobs добавлено поле `diagnostics_json`; API возвращает `diagnostics` с `selected_mode`, `actual_pipeline`, `diarization_mode`, `fallback_used`, `fallback_reason`, `speaker_separation_status`, `time_budget`, `elapsed_time`.
+- UI показывает diagnostics для активных и завершенных jobs, а не только старые timing badges.
+- Добавлены тесты на разделение режимов, отсутствие mode drift, bounded balanced и наличие diagnostics.
+
+Проверки:
+
+```powershell
+python -m pytest tests/test_api_smoke.py tests/test_db.py tests/test_transcriber_fallback.py tests/test_performance_profile.py
+npm.cmd run build
+```
+
+Результат:
+
+```text
+39 passed, 4 warnings
+frontend build passed
+```
+
+## Сессия 16: balanced перестал быть копией fast
+
+Дата: 2026-05-22
+
+Контекст:
+
+- Пользователь прогнал последние `fast` и `balanced` jobs и указал реальный дефект: результаты почти не отличались, runtime отличался на секунды. Это означало, что balanced не выполнял роль среднего режима между fast и maximum.
+
+Сделано:
+
+- `fast` сделан более draft-like: `beam_size=1`, без `word_timestamps`, без ASR glossary prompt/hotwords. Это уменьшает стоимость и оставляет fast максимально быстрым черновиком.
+- `balanced` сохраняет более качественный decode (`beam_size=5`, `best_of=3`), glossary prompt/hotwords и word timestamps.
+- Для `balanced` добавлена bounded lightweight speaker segmentation без pyannote: эвристики пауз и question/answer turns назначают стабильные `Спикер N` labels. Это не full acoustic diarization и не hidden maximum.
+- `balanced` diagnostics теперь получает `diarization_status=lightweight`, timing `lightweight_diarization_seconds`, warning о bounded text/timing heuristics и `speaker_separation_status=lightweight_completed`.
+
+## Сессия 17: balanced возвращён к среднему text-analysis pipeline
+
+- Пользователь уточнил корректный product contract: `fast` должен остаться быстрым черновиком, `maximum` остаётся тяжёлым максимальным качеством, а `balanced` должен восстановить ранний средний механизм — без acoustic diarization, но с анализом, структурированием текста и попыткой разделения/наведения порядка, с ожиданием порядка 20-30 минут для длинной записи.
+- Исправлен mode contract: `balanced` теперь объявляется как `actual_pipeline=balanced_text_analysis`, а не как почти быстрый ASR.
+- ETA для `balanced` поднята до среднего bounded пути: базовый RTF увеличен так, чтобы 1 час аудио оценивался примерно в 25 минут, а старые дефектные balanced/full-diarization samples и быстрые fast-like samples не калибровали новый balanced ETA.
+- `balanced` больше не принимает `TEXT_POLISH_PROVIDER=off/local` как тихое отключение среднего анализа: pipeline пробует `auto` provider chain и только затем явно падает в local fallback.
+- Diagnostics теперь показывают `text_analysis_status` и `text_analysis_provider`. Если нет ключей провайдера text polish, balanced честно помечается как `local_fallback`, потому что без внешнего/локального LLM-провайдера он физически не может дать старый глубокий анализ.
+- `fast` по-прежнему не запускает diarization и не делает lightweight speaker segmentation.
+
+Уточнение после проверки UI:
+
+- Статичный `Budget: 30m` в карточке diagnostics признан некорректным UX: это выглядело как искусственная привязка процесса ко времени, а не как оценка реального pipeline.
+- UI больше не показывает `time_budget` как пользовательский ETA.
+- Для `balanced` добавлен отдельный estimate-path: если text analysis уходит в `local_fallback`, стартовая оценка считается как быстрый локальный cleanup path (`balanced_local`), а не как средний provider-chain path.
+- Если text-polish provider настроен, `balanced` остаётся средним text-analysis path. Если provider отсутствует, приложение должно честно показать fallback и не обещать 20-30 минут анализа, которого фактически нет.
+
+Проверки:
+
+```powershell
+python -m pytest tests
+```
+
+Результат:
+
+```text
+75 passed, 4 warnings
+```

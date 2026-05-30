@@ -227,7 +227,7 @@ def request_segment_polish(
     segments: list[TranscriptSegment],
     spec: ProviderSpec,
     language: str = "ru",
-) -> dict[int, str]:
+) -> dict[int, dict[str, str]]:
     if spec.kind == "openai_compatible":
         return request_openai_compatible_segment_polish(client, segments, spec, language=language)
     if spec.kind == "gigachat":
@@ -242,7 +242,7 @@ def request_openai_compatible_segment_polish(
     segments: list[TranscriptSegment],
     spec: ProviderSpec,
     language: str = "ru",
-) -> dict[int, str]:
+) -> dict[int, dict[str, str]]:
     response = client.post(
         f"{spec.base_url.rstrip('/')}/chat/completions",
         headers=build_bearer_headers(spec.api_key),
@@ -254,7 +254,7 @@ def request_openai_compatible_segment_polish(
     )
     response.raise_for_status()
     content = response.json()["choices"][0]["message"]["content"]
-    return parse_polish_replacements(content)
+    return parse_polish_items(content)
 
 
 def request_gigachat_segment_polish(
@@ -262,7 +262,7 @@ def request_gigachat_segment_polish(
     segments: list[TranscriptSegment],
     spec: ProviderSpec,
     language: str = "ru",
-) -> dict[int, str]:
+) -> dict[int, dict[str, str]]:
     response = client.post(
         f"{spec.base_url.rstrip('/')}/chat/completions",
         headers=build_bearer_headers(spec.api_key),
@@ -274,7 +274,7 @@ def request_gigachat_segment_polish(
     )
     response.raise_for_status()
     content = response.json()["choices"][0]["message"]["content"]
-    return parse_polish_replacements(content)
+    return parse_polish_items(content)
 
 
 def request_yandexgpt_segment_polish(
@@ -282,7 +282,7 @@ def request_yandexgpt_segment_polish(
     segments: list[TranscriptSegment],
     spec: ProviderSpec,
     language: str = "ru",
-) -> dict[int, str]:
+) -> dict[int, dict[str, str]]:
     folder_id = spec.extra.get("folder_id", "")
     if not folder_id:
         raise RuntimeError("YANDEXGPT_FOLDER_ID is not configured.")
@@ -301,7 +301,7 @@ def request_yandexgpt_segment_polish(
     )
     response.raise_for_status()
     alternatives = response.json()["result"]["alternatives"]
-    return parse_polish_replacements(alternatives[0]["message"]["text"])
+    return parse_polish_items(alternatives[0]["message"]["text"])
 
 
 def build_bearer_headers(api_key: str | None) -> dict[str, str]:
@@ -335,7 +335,7 @@ def build_polish_payload(segments: list[TranscriptSegment]) -> str:
     ]
     return (
         "Верни строго JSON без markdown по схеме: "
-        '{"segments":[{"index":0,"text":"исправленный текст"}]}. '
+        '{"segments":[{"index":0,"speaker":"Спикер 1","text":"исправленный текст"}]}. '
         "Количество и индексы сегментов должны совпадать с входом.\n"
         + json.dumps({"segments": payload_segments}, ensure_ascii=False)
     )
@@ -343,24 +343,57 @@ def build_polish_payload(segments: list[TranscriptSegment]) -> str:
 
 def build_polish_instructions(language: str = "ru") -> str:
     return (
-        "Ты исправляешь текст русскоязычной транскрибации с вкраплениями английских IT и Agile терминов. "
-        "Исправляй орфографию, пунктуацию, регистр, написание русских и английских слов, аббревиатуры и названия технологий. "
+        "You are doing constrained transcript post-processing, not rewriting. "
+        "Return only the requested JSON. Do not summarize, shorten, expand, paraphrase, reorder segments, move sentences, or add words. "
+        "You may change text only when the conversation context makes a person name or technical term spelling obvious. "
+        "If you are not sure, keep the text exactly as recognized. "
+        "Speaker handling: acoustic diarization may provide labels like 'Спикер 1' or empty labels. "
+        "Use the text context only to rename a speaker to a real name when the identity is explicit. "
+        "If the identity is not explicit, keep the existing speaker label; if it is empty but the dialog clearly shows separate speakers, use stable labels 'Спикер 1', 'Спикер 2', ... without inventing names. "
+        "Do not merge or split segments. Do not claim more speakers than the text supports. "
+        "Write common IT/Agile abbreviations correctly: API, UI, UX, MVP, QA, CI/CD, PR, DoD, DoR, WIP, OKR, KPI, SLA, SLO, SLI, "
+        "SQL, JSON, XML, YAML, HTTP, HTTPS, REST, SDK, CLI, IDE, DB, DNS, URL, URI, UUID, OAuth, SSO, JWT, RBAC, ACL, "
+        "AI, ML, LLM, NLP, OCR, ASR, ETL, CRM, ERP, CDN, VPN, SSH, TLS, PDF, CSV, XLSX, DOCX. "
+        "For each segment return only speaker and text. "
+        f"Main transcript language: {language}."
+    )
+    return (
+        "Ты выполняешь строго ограниченную пост-обработку русскоязычной транскрибации. "
+        "Нельзя пересказывать, сокращать, расширять, менять смысл, менять порядок сегментов, переставлять предложения или добавлять новые слова. "
+        "Текст можно менять только когда из контекста явно понятно написание имени или технического термина. "
+        "Если не уверен, оставляй текст как есть. "
+        "Speaker можно заменить на имя только если из слов самого разговора явно понятно, кто говорит. "
+        "Если имя говорящего неочевидно, оставляй исходный speaker label. "
         "Правильно записывай IT/Agile сокращения: API, UI, UX, MVP, QA, CI/CD, PR, DoD, DoR, WIP, OKR, KPI, SLA, SLO, SLI, "
         "SQL, JSON, XML, YAML, HTTP, HTTPS, REST, SDK, CLI, IDE, DB, DNS, URL, URI, UUID, OAuth, SSO, JWT, RBAC, ACL, "
         "AI, ML, LLM, NLP, OCR, ASR, ETL, CRM, ERP, CDN, VPN, SSH, TLS, PDF, CSV, XLSX, DOCX. "
-        "Не пересказывай, не сокращай, не добавляй новые факты и не меняй смысл. "
-        "Сохраняй порядок сегментов и возвращай только исправленный текст каждого сегмента. "
+        "Возвращай для каждого сегмента только speaker и text. "
         f"Основной язык: {language}."
     )
 
 
 def parse_polish_replacements(content: str) -> dict[int, str]:
-    parsed = json.loads(extract_json_text(content))
     return {
-        int(item["index"]): normalize_domain_terms(str(item["text"]))
-        for item in parsed.get("segments", [])
-        if isinstance(item, dict) and "index" in item and "text" in item
+        index: item["text"]
+        for index, item in parse_polish_items(content).items()
+        if item.get("text")
     }
+
+
+def parse_polish_items(content: str) -> dict[int, dict[str, str]]:
+    parsed = json.loads(extract_json_text(content))
+    replacements: dict[int, dict[str, str]] = {}
+    for item in parsed.get("segments", []):
+        if not isinstance(item, dict) or "index" not in item:
+            continue
+        value: dict[str, str] = {}
+        if "text" in item:
+            value["text"] = normalize_domain_terms(str(item["text"]))
+        if "speaker" in item:
+            value["speaker"] = normalize_speaker_label(str(item["speaker"]))
+        if value:
+            replacements[int(item["index"])] = value
+    return replacements
 
 
 def extract_json_text(content: str) -> str:
@@ -372,13 +405,45 @@ def extract_json_text(content: str) -> str:
 
 
 def apply_segment_replacements(
-    segments: list[TranscriptSegment], replacements: dict[int, str]
+    segments: list[TranscriptSegment], replacements: dict[int, dict[str, str]]
 ) -> list[TranscriptSegment]:
     polished: list[TranscriptSegment] = []
     for index, segment in enumerate(segments):
         replacement = replacements.get(index)
+        text = normalize_domain_terms(segment["text"])
+        speaker = segment.get("speaker", "")
         if replacement:
-            polished.append({**segment, "text": replacement})
-        else:
-            polished.append({**segment, "text": normalize_domain_terms(segment["text"])})
+            candidate_text = replacement.get("text", "")
+            if candidate_text and is_safe_text_replacement(segment["text"], candidate_text):
+                text = candidate_text
+            candidate_speaker = replacement.get("speaker", "")
+            if candidate_speaker and is_safe_speaker_label(candidate_speaker):
+                speaker = candidate_speaker
+        polished.append({**segment, "text": text, "speaker": speaker})
     return polished
+
+
+def normalize_speaker_label(value: str) -> str:
+    return " ".join(value.strip().split())
+
+
+def is_safe_speaker_label(value: str) -> bool:
+    label = normalize_speaker_label(value)
+    if not label or len(label) > 80:
+        return False
+    return bool(re.fullmatch(r"[A-Za-zА-Яа-яЁё0-9 ._-]+", label))
+
+
+def is_safe_text_replacement(original: str, candidate: str) -> bool:
+    original_norm = normalize_domain_terms(original)
+    candidate_norm = normalize_domain_terms(candidate)
+    return candidate_norm == original_norm
+    if candidate_norm == original_norm:
+        return True
+    original_tokens = set(re.findall(r"[A-Za-zА-Яа-яЁё0-9]+", original_norm.lower()))
+    candidate_tokens = set(re.findall(r"[A-Za-zА-Яа-яЁё0-9]+", candidate_norm.lower()))
+    if not original_tokens or not candidate_tokens:
+        return False
+    common_ratio = len(original_tokens & candidate_tokens) / max(len(original_tokens | candidate_tokens), 1)
+    length_ratio = len(candidate_norm) / max(len(original_norm), 1)
+    return common_ratio >= 0.82 and 0.75 <= length_ratio <= 1.25

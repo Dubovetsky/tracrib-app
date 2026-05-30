@@ -13,6 +13,46 @@ _SELF_INTRO_RE = re.compile(
     re.IGNORECASE,
 )
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?…])\s+(?=[A-ZА-ЯЁ0-9\"«])")
+_INVALID_EXPLICIT_SPEAKER_NAMES = {
+    "\u0430",
+    "\u0431\u0435\u0437",
+    "\u0432",
+    "\u0432\u043e",
+    "\u0434\u0430",
+    "\u0434\u043b\u044f",
+    "\u0434\u043e",
+    "\u0435\u0441\u043b\u0438",
+    "\u0438\u0437",
+    "\u043a",
+    "\u043a\u0430\u043a",
+    "\u043a\u0430\u043a\u0430\u044f",
+    "\u043a\u0430\u043a\u0438\u0435",
+    "\u043a\u0430\u043a\u043e\u0439",
+    "\u043a\u043e\u0433\u0434\u0430",
+    "\u043a\u0442\u043e",
+    "\u043d\u0430",
+    "\u043d\u043e",
+    "\u043e",
+    "\u043e\u0442",
+    "\u043f\u043e",
+    "\u043f\u043e\u0434",
+    "\u043f\u0440\u0438",
+    "\u043f\u0440\u043e",
+    "\u0441",
+    "\u0441\u043e",
+    "\u0442\u043e",
+    "\u0447\u0442\u043e",
+    "\u044d\u0442\u043e",
+    "adr",
+    "api",
+    "edr",
+    "idr",
+    "it",
+    "pmi",
+    "\u0430\u0440\u0431\u0438\u0442\u0440",
+    "\u0447\u0435\u043d\u044c",
+    "\u0447\u0435\u043d\u044c-\u0447\u0435\u043d\u044c-\u0447\u0435\u043d\u044c",
+}
 _SPACE_RE = re.compile(r"\s+")
 _DOTTED_EN_ABBREVIATION_RE = re.compile(r"\b(?:[A-Za-z]\.\s*){2,}")
 _TRAILING_ARTIFACT_RE = re.compile(
@@ -30,6 +70,7 @@ _TRAILING_ARTIFACT_RE = re.compile(
 )
 _SPOKEN_SEPARATOR_RE = r"(?:\s+|[/\\+-]\s*)"
 _SPOKEN_IT_AGILE_ABBREVIATIONS = {
+    "Jira": (("джира",), ("джиру",), ("джире",), ("джиры",)),
     "API": (("эй", "пи", "ай"), ("а", "пи", "ай"), ("апи",)),
     "UI": (("ю", "ай"),),
     "UX": (("ю", "икс"),),
@@ -107,6 +148,7 @@ _SPOKEN_IT_AGILE_ABBREVIATIONS = {
     "DOCX": (("док", "икс"), ("ди", "о", "си", "икс")),
 }
 _WRITTEN_IT_AGILE_REPLACEMENTS = {
+    "jira": "Jira",
     "ci/cd": "CI/CD",
     "okrs": "OKR",
     "kpis": "KPI",
@@ -217,10 +259,17 @@ _ANSWER_GAP_SECONDS = 12.0
 
 
 def postprocess_transcript(
-    segments: list[TranscriptSegment], language: str = "ru"
+    segments: list[TranscriptSegment],
+    language: str = "ru",
+    preserve_words: bool = False,
+    allow_text_speaker_guess: bool = False,
 ) -> tuple[str, list[TranscriptSegment]]:
-    cleaned_segments = strip_trailing_artifacts(segments)
-    processed_segments = assign_speakers(cleaned_segments)
+    cleaned_segments = list(segments) if preserve_words else strip_trailing_artifacts(segments)
+    processed_segments = assign_speakers(
+        cleaned_segments,
+        preserve_words=preserve_words,
+        allow_text_speaker_guess=allow_text_speaker_guess,
+    )
     return render_readable_text(processed_segments, language=language), processed_segments
 
 
@@ -251,7 +300,11 @@ def strip_trailing_artifact_text(text: str) -> str:
     return cleaned
 
 
-def assign_speakers(segments: list[TranscriptSegment]) -> list[TranscriptSegment]:
+def assign_speakers(
+    segments: list[TranscriptSegment],
+    preserve_words: bool = False,
+    allow_text_speaker_guess: bool = False,
+) -> list[TranscriptSegment]:
     speaker_by_name: dict[str, str] = {}
     name_by_diarized_speaker: dict[str, str] = {}
     unknown_speakers = ["Спикер 1", "Спикер 2"]
@@ -260,10 +313,15 @@ def assign_speakers(segments: list[TranscriptSegment]) -> list[TranscriptSegment
     processed: list[TranscriptSegment] = []
 
     for segment in segments:
-        text = normalize_domain_terms(normalize_spaces(segment["text"]))
-        explicit_name, text = extract_explicit_speaker(text)
+        text = normalize_spaces(segment["text"])
+        normalized_for_speaker_detection = normalize_domain_terms(text)
+        explicit_name, explicit_text = extract_explicit_speaker(normalized_for_speaker_detection)
         intro_name = extract_self_intro_name(text)
         diarized_speaker = normalize_spaces(segment.get("speaker", ""))
+        if explicit_name and not preserve_words:
+            text = explicit_text
+        elif not preserve_words:
+            text = normalized_for_speaker_detection
 
         if explicit_name:
             current_speaker = speaker_by_name.setdefault(explicit_name, explicit_name)
@@ -275,7 +333,7 @@ def assign_speakers(segments: list[TranscriptSegment]) -> list[TranscriptSegment
                 name_by_diarized_speaker[diarized_speaker] = current_speaker
         elif diarized_speaker:
             current_speaker = name_by_diarized_speaker.get(diarized_speaker, diarized_speaker)
-        elif previous and is_likely_answer_turn(previous, segment):
+        elif allow_text_speaker_guess and previous and is_likely_answer_turn(previous, segment):
             current_speaker = other_unknown_speaker(previous.get("speaker", current_speaker), unknown_speakers)
 
         processed_segment: TranscriptSegment = {
@@ -284,6 +342,8 @@ def assign_speakers(segments: list[TranscriptSegment]) -> list[TranscriptSegment
             "text": text,
             "speaker": current_speaker,
         }
+        if segment.get("raw_speaker"):
+            processed_segment["raw_speaker"] = segment["raw_speaker"]
         processed.append(processed_segment)
         previous = processed_segment
 
@@ -380,7 +440,19 @@ def extract_explicit_speaker(text: str) -> tuple[str | None, str]:
     if not match:
         return None, text
     name = normalize_name(match.group("name"))
+    if not is_plausible_explicit_speaker_name(name):
+        return None, text
     return name, normalize_spaces(match.group("text"))
+
+
+def is_plausible_explicit_speaker_name(name: str) -> bool:
+    normalized = normalize_spaces(name).lower()
+    if normalized in _INVALID_EXPLICIT_SPEAKER_NAMES:
+        return False
+    if normalized.upper() in _SPOKEN_IT_AGILE_ABBREVIATIONS:
+        return False
+    parts = normalized.split()
+    return not any(part in _INVALID_EXPLICIT_SPEAKER_NAMES for part in parts)
 
 
 def extract_self_intro_name(text: str) -> str | None:

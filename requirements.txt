@@ -2,6 +2,8 @@ fastapi==0.115.6
 uvicorn[standard]==0.34.0
 python-multipart==0.0.20
 faster-whisper==1.2.1
+pyannote.audio>=3.3.0
+torchaudio>=2.8.0
 nvidia-cublas-cu12==12.9.2.10; platform_system == "Windows"
 nvidia-cudnn-cu12==9.22.0.52; platform_system == "Windows"
 pytest==8.3.4

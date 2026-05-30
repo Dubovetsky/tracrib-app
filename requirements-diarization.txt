@@ -1,1 +1,4 @@
 pyannote.audio>=3.3.0
+
+# Kept for backward compatibility with older setup instructions.
+# Diarization is now part of the default backend quality path via requirements.txt.
